@@ -87,7 +87,7 @@ export class ZPLCanvas extends HTMLElement{
   }
   static makeFragment(){
     let frag = document.createDocumentFragment();
-    frag.appendChild(ZPLCanvas.#ce("link",{as:"style",type:"text/css",rel:"preload prefetch stylesheet",href:"../zpl-canvas/zpl-canvas.css"}));
+    frag.appendChild(ZPLCanvas.#ce("link",{as:"style",type:"text/css",rel:"preload prefetch stylesheet",href:"./zpl-canvas/zpl-canvas.css"}));
     let div = frag.appendChild(ZPLCanvas.#ce("div",{class:"canvas-bg",part:"canvas-bg"}));
     let canvas = div.appendChild(ZPLCanvas.#ce("canvas",{part:"canvas"}));
     return frag
