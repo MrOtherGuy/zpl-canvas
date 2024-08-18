@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width"/>
+  <meta charset="UTF-8">
+  <title>zpl viewer</title>
+  <script type="module" src="js/main.js"></script>
+  <link href="css/main.css" rel="stylesheet" type="text/css">
+  <meta name="description" content="insert description here">
+</head>
+<body>
+  <p>Simple zpl code parser and renderer</p>
+  <zpl-canvas id="zpl-canvas" data-width="800" data-height="500" data-scale="0.6"><template>^XA
+
+^FX Section below
+^CF0,56
+^FO50,50^GB100,100,100^FS
+^FO75,75^FR^GB100,100,100^FS
+^FO75,50^FR^GB100,100,100^FS
+^FO50,75^FR^GB100,100,100^FS
+^FO93,93^GB40,40,40^FS
+^FO220,50^FDZPL Canvas^FS
+^CF0,30
+^FO220,115^FDPreview zpl content^FS
+^FO220,155^FDVery wip^FS
+^FO220,195^FDMuch wow^FS
+^FO50,250^GB700,3,3^FS
+
+^FX Comments like this shouldn't render
+^CFA,30
+^FO50,270^GB700,210,3^FS
+^FO400,270^GB3,210,3^FS
+^FO70,290^FDFantastic text^FS
+^CF0,25
+^FO70,330^FD100 Example^FS
+^BY2,2,60
+^FO100,370^AA,20^BC^FD12345678^FS
+^BY2,2,100
+^FX This is a dummy datamatrix
+^FO520,315^BX^FDDummy text^FS
+^FO460,430^FDDatamatrix dummy^FS
+
+^XZ</template></zpl-canvas>
+<hr>
+  <textarea id="textbox" placeholder="zpl content here" cols="80" rows="30"></textarea>
+  <ul id="errorlist"></ul></p>
+</body>
+</html>

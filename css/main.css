@@ -1,0 +1,10 @@
+.invalid{
+  background-color: pink;
+}
+code{
+  outline: 1px solid grey;
+  background-color: aliceblue
+}
+zpl-canvas{
+  opacity: 1;
+}
