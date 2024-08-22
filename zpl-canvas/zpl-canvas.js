@@ -69,7 +69,7 @@ export class ZPLCanvas extends HTMLElement{
     this.canvasContext.clearRect(0,0,this.canvas.width * (1/this.#scaleFactor),this.canvas.height * (1/this.#scaleFactor));
     // a zpl stream can contain more than one label, we only render the first one
     if(!zpl.isValid()){
-      throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XF ?")
+      throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
     return zpl.labels[0].render(this.canvasContext);
   }

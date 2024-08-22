@@ -381,11 +381,14 @@ export class ZPLLabel{
   }
   static parse(str){
     let label = new ZPLLabel();
+    if(str.length && str[0] != "^"){
+      throw new Error(`Invalid data at [0]: ${str.slice(0,3)}`)
+    }
     let s = 0;
     let head = 0;
     let commands = [];
     while(head < str.length){
-      if(str[head] === "^"){
+      if(head > 0 && str[head] === "^"){
         if(head < s+2){
           throw new Error(`Invalid command start marker "^" at: ${str.slice(s,head+3)}`)
         }
@@ -394,7 +397,12 @@ export class ZPLLabel{
       }
       head++
     }
-    commands.push(str.slice(s+1))
+    if(s < str.length){
+      commands.push(str.slice(s+1));
+      if(commands.at(-1).length === 0){
+        throw new Error(`Leftover command start marker "^" at: ${s}`)
+      }
+    }
     let container = null;
     for(let command of commands){
       if(command[0] === "A"){
@@ -489,7 +497,7 @@ export class ZPLStream{
 export class ZPLParser{
   static parse(str){
     let stream = new ZPLStream();
-    let t = str.matchAll(/\^XA(.*)\^XZ/gs);
+    let t = str.matchAll(/\^XA\s*(.*)\s*\^XZ/gs);
     for(let label of t){
       stream.labels.push(ZPLLabel.parse(label[1]))
     }
