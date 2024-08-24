@@ -135,11 +135,12 @@ class ZPLFieldDataCommand extends ZPLCommand{
       textOrigin += (size[0] >> 1);
       context.textAlign = "center";
     }
+    const text = config.get(this.text) || this.text;
     if(config.get("line") != "N"){
-      context.fillText(this.text,textOrigin,y_origin);
+      context.fillText(text,textOrigin,y_origin);
     }
     if(config.get("lineAbove") === "Y"){
-      context.fillText(this.text,textOrigin,origin[1] - this.textSize(context));
+      context.fillText(text,textOrigin,origin[1] - this.textSize(context));
     }
     context.textAlign = "left";
     return this.toSuccess()
@@ -351,10 +352,11 @@ class ZPLCommentCommand extends ZPLCommand{
 }
 export class ZPLLabel{
   #isValid;
+  #configuration;
   constructor(){
     this.#isValid = false;
     this.commands = [];
-    this.configuration = new Map();
+    this.#configuration = new Map();
   }
   isValid(){
     return this.#isValid
@@ -366,17 +368,20 @@ export class ZPLLabel{
       this.commands.push(new ZPLCommand(str,type));
     }
   }
-  render(context){
+  render(context,template = {}){
+    for(let hmm of Object.entries(template)){
+      this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+    }
     let results = this.commands
     .map(command => {
       try{
-        return command.draw(context,this.configuration)
+        return command.draw(context,this.#configuration)
       }catch(ex){
         console.error(ex);
       }
       return command.toError(ex.message)
     });
-    this.configuration.clear();
+    this.#configuration.clear();
     return results.flat();
   }
   static parse(str){

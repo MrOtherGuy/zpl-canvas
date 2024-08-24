@@ -1,10 +1,11 @@
-import { ZPLParser, ZPLStream } from "./zpl-parser.js";
-export { ZPLParser, ZPLStream }
+import { ZPLParser, ZPLStream, ZPLLabel } from "./zpl-parser.js";
+export { ZPLParser, ZPLStream, ZPLLabel }
 
 export class ZPLCanvas extends HTMLElement{
   #canvas;
   #ctx;
   #scaleFactor;
+  #label;
   constructor(){
     super();
     let template = document.getElementById("table-view-template");
@@ -58,24 +59,66 @@ export class ZPLCanvas extends HTMLElement{
     this.#scaleFactor = x;
     this.canvasContext.scale(x,x);
   }
-  render(zpl){
-    if(!(zpl instanceof ZPLStream)){
-      throw new Error("argument 0 is not a ZPLStream")
+  get label(){
+    return this.#label;
+  }
+  set label(zpl){
+    if(zpl instanceof ZPLLabel || zpl === null){
+      this.#label = zpl;
+      zpl && this.render();
+    }else{
+      throw new Error("label can only be set to ZPLLabel instance or null")
+    }
+  }
+  get templateParams(){
+    let ents = Object.entries(this.dataset).filter(a => a[0].startsWith("template_"));
+    return Object.fromEntries(ents.map(a => [a[0].slice(9),a[1]]))
+  }
+  set templateParams(obj){
+    if(obj && !(typeof obj === "object" && !Array.isArray(obj))){
+      throw new Error("template descritor is not an object")
+    }
+    {
+      let attrs = [];
+      for(let attr of this.attributes){
+        if(attr.name.startsWith("data-template_")){
+          attrs.push(attr.name)
+        }
+      }
+      attrs.forEach(a => this.removeAttribute(a));
+    }
+    if(!obj){
+      return
+    }
+    for(let ent of Object.entries(obj)){
+      this.dataset[`template_${ent[0]}`] = ent[1]
+    }
+  }
+  render(aZpl = null,template = {}){
+    const zpl = aZpl === null ? this.label : aZpl; 
+    if(!(zpl instanceof ZPLLabel)){
+      throw new Error("not a valid ZPLLabel")
+    }
+    if(!(typeof template === "object") && !Array.isArray(template)){
+      throw new Error("template descriptor is not an object")
     }
     const canvas = this.canvas;
-    if(!zpl.isValid){
-      
-    }
     this.canvasContext.clearRect(0,0,this.canvas.width * (1/this.#scaleFactor),this.canvas.height * (1/this.#scaleFactor));
     // a zpl stream can contain more than one label, we only render the first one
     if(!zpl.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
-    return zpl.labels[0].render(this.canvasContext);
+    let templateParams = Object.assign(this.templateParams,template);
+    let result = zpl.render(this.canvasContext,templateParams);
+    this.#label = zpl;
+    return result
   }
-  renderText(str){
+  renderText(str,template = {}){
     let thing = ZPLParser.parse(str);
-    return this.render(thing);
+    if(!thing.isValid()){
+      throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
+    }
+    return this.render(thing.labels[0],template);
     // do things
   }
   static #ce(tag,props){
