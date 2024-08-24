@@ -41,6 +41,13 @@ export class ZPLCanvas extends HTMLElement{
     this.canvas.setAttribute("width",width);
     this.canvas.setAttribute("height",height);
   }
+  stringify(template = {}){
+    if(!(typeof template === "object") && !Array.isArray(template)){
+      throw new Error("template descriptor is not an object")
+    }
+    let templateParams = Object.assign(this.templateParams,template);
+    return this.label.stringify(templateParams)
+  }
   get canvas(){
     if(!this.#canvas){
       this.#canvas = this.shadowRoot.querySelector("canvas");

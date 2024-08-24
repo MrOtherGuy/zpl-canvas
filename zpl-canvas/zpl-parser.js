@@ -26,6 +26,9 @@ class ZPLCommand{
   toSuccess(){
     return { command: `^${this.type}${this.text}`, ok: true }
   }
+  stringify(){
+    return `^${this.type}${this.text}`
+  }
   static iterateOnce(cmd){
     let i = 0;
     return {
@@ -107,6 +110,9 @@ class ZPLField extends ZPLCommand{
       this.#commands.push(new ZPLCommand(str,type));
     }
   }
+  stringify(config){
+    return `^FO${this.text}${this.#commands.map(c => c.stringify(config)).join("")}^FS`
+  }
 }
 class ZPLFieldDataCommand extends ZPLCommand{
   constructor(str,type,propMap){
@@ -120,6 +126,9 @@ class ZPLFieldDataCommand extends ZPLCommand{
   }
   toSuccess(){
     return { command: `^${this.type}${[...this.parameters()].join(",")}`, ok: true }
+  }
+  stringify(template){
+    return `^FD${template.get(this.text) || this.text}`
   }
   draw(context,config,origin){
     let symbolType = config.get("symbol_type");
@@ -383,6 +392,19 @@ export class ZPLLabel{
     });
     this.#configuration.clear();
     return results.flat();
+  }
+  stringify(template = {}){
+    if(!this.#isValid){
+      throw new Error("Invalid label can't be stringified")
+    }
+    for(let hmm of Object.entries(template)){
+      this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+    }
+    const str =  `^XA
+${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
+^XZ`;
+    this.#configuration.clear();
+    return str
   }
   static parse(str){
     let label = new ZPLLabel();
