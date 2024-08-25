@@ -90,13 +90,13 @@ class ZPLField extends ZPLCommand{
     }
     context.font = fontStyle;
     context.globalCompositeOperation = composite;
-    config.delete("symbol_type");
-    config.delete("orientation");
+    config.delete("symbol_options");
+    /*config.delete("orientation");
     config.delete("symbol_height");
     config.delete("line");
     config.delete("lineAbove");
     config.delete("checkDigit");
-    config.delete("mode");
+    config.delete("mode");*/
     results.unshift(this.toSuccess());
     return results
   }
@@ -131,12 +131,14 @@ class ZPLFieldDataCommand extends ZPLCommand{
     return `^FD${template.get(this.text) || this.text}`
   }
   draw(context,config,origin){
-    let symbolType = config.get("symbol_type");
+    let symbol = config.get("symbol_options");
     let y_origin = origin[1];
     let textOrigin = origin[0];
-    if(symbolType){
-      let size = symbolType.renderFake(context,origin,config);
-      if(symbolType != ZPLSymbolTypeBC){
+    const text = config.get(this.text) || this.text;
+    if(symbol?.type){
+      let size = symbol.type.renderFake(context,origin,config,symbol,text);
+      
+      if(symbol.type != ZPLSymbolTypeBC){
         // we can return since symbol types other than code128 don't print text
         return this.toSuccess()
       }
@@ -144,11 +146,11 @@ class ZPLFieldDataCommand extends ZPLCommand{
       textOrigin += (size[0] >> 1);
       context.textAlign = "center";
     }
-    const text = config.get(this.text) || this.text;
-    if(config.get("line") != "N"){
+    
+    if(symbol?.line != "N"){
       context.fillText(text,textOrigin,y_origin);
     }
-    if(config.get("lineAbove") === "Y"){
+    if(symbol?.lineAbove === "Y"){
       context.fillText(text,textOrigin,origin[1] - this.textSize(context));
     }
     context.textAlign = "left";
@@ -196,20 +198,15 @@ class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
   }
   draw(_,config){
     let [orientation,height,line,lineAbove,checkDigit,mode] = [...this.parameters()];
-    config
-    .set("symbol_type",ZPLSymbolTypeBC)
-    .set("orientation",orientation)
-    .set("symbol_height",height)
-    .set("line",line)
-    .set("lineAbove",lineAbove)
-    .set("checkDigit",checkDigit)
-    .set("mode",mode);
+    let type = ZPLSymbolTypeBC;
+    let opt = {...{type,orientation,height,line,lineAbove,checkDigit,mode}};
+    config.set("symbol_options",opt);
     return this.toSuccess()
   }
-  static renderFake(context,origin,map){
+  static renderFake(context,origin,map,symbolOptions){
     let mod_width = map.get("module_width") || 2;
     let mod_ratio = map.get("module_ratio") || 3;
-    let height = map.get("symbol_height") || map.get("height") || 10;
+    let height = symbolOptions.height || map.get("height") || 10;
     let x = origin[0];
     const y = origin[1];
     for(let i = 0; i < 10; i++){
@@ -229,19 +226,14 @@ class ZPLSymbolTypeBQ extends ZPLSymbolTypeCommand{
     this.requireParams(0,5);
   }
   draw(_,config){
-    let [orientation,height,line,lineAbove,checkDigit,mode] = [...this.parameters()];
-    config
-    .set("symbol_type",ZPLSymbolTypeBQ)
-    .set("orientation",orientation)
-    .set("symbol_height",height)
-    .set("line",line)
-    .set("lineAbove",lineAbove)
-    .set("checkDigit",checkDigit)
-    .set("mode",mode);
+    let [orientation,model,magnification,ecc,mask] = [...this.parameters()];
+    let type = ZPLSymbolTypeBQ;
+    let opt = {...{type,orientation,model,magnification,ecc,mask}};
+    config.set("symbol_options",opt);
     return this.toSuccess()
   }
-  static renderFake(context,origin,map){
-    let height = map.get("symbol_height") || map.get("height") || 10;
+  static renderFake(context,origin,map,symbolOptions,text){
+    let height = symbolOptions.height || map.get("height") || 10;
     context.fillRect(origin[0],origin[1],height,height);
     return [height,height]
   }
@@ -249,24 +241,42 @@ class ZPLSymbolTypeBQ extends ZPLSymbolTypeCommand{
 class ZPLSymbolTypeBX extends ZPLSymbolTypeCommand{
   constructor(str){
     super(str,"BX");
-    this.requireParams(0,7);
+    this.requireParams(0,8);
   }
   draw(_,config){
-    let [orientation,height,line,lineAbove,checkDigit,mode] = [...this.parameters()];
-    config
-    .set("symbol_type",ZPLSymbolTypeBX)
-    .set("orientation",orientation)
-    .set("symbol_height",height)
-    .set("line",line)
-    .set("lineAbove",lineAbove)
-    .set("checkDigit",checkDigit)
-    .set("mode",mode);
+    let [orientation,height,quality,columns,rows,format,escape,ratio] = [...this.parameters()];
+    let type = ZPLSymbolTypeBX;
+    let opt = {...{type,orientation,height,quality,columns,rows,format,escape,ratio}};
+    config.set("symbol_options",opt);
     return this.toSuccess()
   }
-  static renderFake(context,origin,map){
-    let height = map.get("symbol_height") || map.get("height") || 10;
-    context.fillRect(origin[0],origin[1],height,height);
-    return [height,height]
+  static computeSizeInModules(n){ // inaccurate, but good enough
+    let tMaxData = [3,5,8,12,18,22,30,36,44];
+    let matrix = 8;
+    for (let i = 0; i < tMaxData.length;i++){
+      if (n <= tMaxData[i]){
+        matrix = 8 + i*2;
+        break;
+      }
+    }
+    return matrix + 2;
+  }
+  static renderFake(context,origin,map,symbolOptions,text){
+    let moduleSize = symbolOptions.height;
+    let requiredResolution = this.computeSizeInModules(text.length);
+    const rows = symbolOptions.rows || requiredResolution;
+    if(!moduleSize){
+      let size = map.get("height") || 10;
+      moduleSize = Math.max(1,Math.floor(size / rows));
+    }
+    const sideLength = moduleSize * rows;
+    context.fillRect(origin[0],origin[1],moduleSize,moduleSize * rows);
+    context.fillRect(origin[0] + moduleSize,origin[1] + sideLength, sideLength - moduleSize, -moduleSize);
+    for(let x = rows - 1; x > 1; x -= 2){
+      context.fillRect(origin[0] + x * moduleSize,origin[1],-moduleSize,moduleSize);
+      context.fillRect(origin[0] + sideLength,origin[1] + (x-1) * moduleSize,-moduleSize,-moduleSize);
+    }
+    return [sideLength,sideLength]
   }
 }
 class ZPLFontCommand extends ZPLCommand{
@@ -387,8 +397,8 @@ export class ZPLLabel{
         return command.draw(context,this.#configuration)
       }catch(ex){
         console.error(ex);
+        return command.toError(ex.message)
       }
-      return command.toError(ex.message)
     });
     this.#configuration.clear();
     return results.flat();
