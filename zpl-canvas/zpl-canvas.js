@@ -65,6 +65,7 @@ export class ZPLCanvas extends HTMLElement{
     this.setSize(this.canvas.width * (x / this.#scaleFactor),this.canvas.height * (x / this.#scaleFactor));
     this.#scaleFactor = x;
     this.canvasContext.scale(x,x);
+    this.#label && this.render()
   }
   get label(){
     return this.#label;
