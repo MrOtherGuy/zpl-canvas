@@ -91,12 +91,6 @@ class ZPLField extends ZPLCommand{
     context.font = fontStyle;
     context.globalCompositeOperation = composite;
     config.delete("symbol_options");
-    /*config.delete("orientation");
-    config.delete("symbol_height");
-    config.delete("line");
-    config.delete("lineAbove");
-    config.delete("checkDigit");
-    config.delete("mode");*/
     results.unshift(this.toSuccess());
     return results
   }
