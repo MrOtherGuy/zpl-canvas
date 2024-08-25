@@ -10,7 +10,7 @@
 </head>
 <body>
   <p>Simple zpl code parser and renderer</p>
-  <zpl-canvas id="zpl-canvas" data-template_header="Hello world!" data-template_barcode="00101010" data-width="800" data-height="500" data-scale="0.6"><template>^XA
+  <zpl-canvas id="zpl-canvas" data-template_header="Hello world!" data-template_barcode="00101010" data-template_dm="Datamatrix dummy" data-width="800" data-height="500" data-scale="0.6"><template>^XA
 
 ^FX Section below
 ^CF0,56
@@ -37,8 +37,8 @@
 ^FO100,370^AA,20^BC^FD${barcode}^FS
 ^BY2,2,100
 ^FX This is a dummy datamatrix
-^FO520,315^BX^FDDummy text^FS
-^FO460,430^FDDatamatrix dummy^FS
+^FO520,315^BX^FD${dm}^FS
+^FO460,430^FD${dm}^FS
 
 ^XZ</template></zpl-canvas>
 <hr>
