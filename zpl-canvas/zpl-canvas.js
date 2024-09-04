@@ -6,6 +6,7 @@ export class ZPLCanvas extends HTMLElement{
   #ctx;
   #scaleFactor;
   #label;
+  #templateForm;
   constructor(){
     super();
     let template = document.getElementById("table-view-template");
@@ -78,9 +79,23 @@ export class ZPLCanvas extends HTMLElement{
       throw new Error("label can only be set to ZPLLabel instance or null")
     }
   }
-  get templateParams(){
+  get templateAttributes(){
     let ents = Object.entries(this.dataset).filter(a => a[0].startsWith("template_"));
-    return Object.fromEntries(ents.map(a => [a[0].slice(9),a[1]]))
+    return Object.fromEntries(ents.map(a => [a[0].slice(9),a[1]]));
+  }
+  get templateParams(){
+    if(this.label?.isValid()){
+      let things = Object.assign(this.label.templateFields,this.templateAttributes);
+      let formItems = Array.from(this.templateForm.children);
+      for(let [key,val] of Object.entries(things)){
+        let match = formItems.find(a => a.dataset.key === key);
+        if(match && match.firstChild.lastChild.value){
+          things[key] = match.firstChild.lastChild.value;
+        }
+      }
+      return things
+    }
+    return this.templateAttributes
   }
   set templateParams(obj){
     if(obj && !(typeof obj === "object" && !Array.isArray(obj))){
@@ -102,6 +117,10 @@ export class ZPLCanvas extends HTMLElement{
       this.dataset[`template_${ent[0]}`] = ent[1]
     }
   }
+  get templateForm(){
+    
+    return this.#templateForm
+  }
   render(aZpl = null,template = {}){
     const zpl = aZpl === null ? this.label : aZpl; 
     if(!(zpl instanceof ZPLLabel)){
@@ -116,9 +135,10 @@ export class ZPLCanvas extends HTMLElement{
     if(!zpl.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
-    let templateParams = Object.assign(this.templateParams,template);
-    let result = zpl.render(this.canvasContext,templateParams);
     this.#label = zpl;
+    let templateParams = Object.assign(this.templateAttributes,template);
+    let result = zpl.render(this.canvasContext,templateParams);
+    
     return result
   }
   renderText(str,template = {}){
@@ -126,8 +146,51 @@ export class ZPLCanvas extends HTMLElement{
     if(!thing.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
+    if(this.dataset.form === "true"){
+      let templateParams = Object.assign(thing.labels[0].templateFields,this.templateAttributes)
+      this.updateTemplateForm(templateParams);
+    }
     return this.render(thing.labels[0],template);
     // do things
+  }
+  updateTemplateForm(params){
+    let form = this.templateForm || ZPLCanvas.makeTemplateForm(this);
+    let formItems = Array.from(form.children);
+    let toBePreserved = new Set();
+    for(let [key,val] of Object.entries(params)){
+      let item = formItems.find(a => a.dataset.key === key);
+      if(!item){
+        let it = ZPLCanvas.#ce("li",{class: "templatelist-item", "data-key": key});
+        let label = it.appendChild(ZPLCanvas.#ce("label",{class: "templatelist-label"}));
+        label.textContent = key;
+        let input = label.appendChild(ZPLCanvas.#ce("input",{type:"text",placeholder: "template value"}));
+        input.zpl = this;
+        input.addEventListener("input",ZPLCanvas.formFieldListener);
+        form.appendChild(it);
+        toBePreserved.add(it);
+      }else{
+        toBePreserved.add(item)
+      }
+    }
+    for(let child of formItems){
+      if(!toBePreserved.has(child)){
+        child.removeEventListener("input",ZPLCanvas.formFieldListener);
+        child.remove()
+      }
+    }
+    toBePreserved.clear()
+  }
+  static formFieldListener(ev){
+    let zpl = ev.target.zpl;
+    if(!zpl){
+      return
+    }
+    zpl.render(null,zpl.templateParams)
+  }
+  static makeTemplateForm(zplcanvas){
+    let box = zplcanvas.shadowRoot.appendChild(ZPLCanvas.#ce("div",{class:"form-container",part:"form-box"}));
+    zplcanvas.#templateForm = box.appendChild(ZPLCanvas.#ce("ul",{id:"template-form",part:"form"}))
+    return zplcanvas.#templateForm
   }
   static #ce(tag,props){
     let node = document.createElement(tag);

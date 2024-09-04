@@ -97,6 +97,9 @@ class ZPLField extends ZPLCommand{
   isTextField(){
     return this.#commands.every(a => !(a instanceof ZPLSymbolTypeCommand))
   }
+  get templateFields(){
+    return this.#commands.filter(c => /\$\{.+\}/.test(c.text)).map(c => c.text.match(/\$\{(.+)\}/)?.[1])
+  }
   addCommand(str,type){
     if(str instanceof ZPLCommand){
       this.#commands.push(str)
@@ -373,6 +376,13 @@ export class ZPLLabel{
   }
   isValid(){
     return this.#isValid
+  }
+  get templateFields(){
+    return Object.fromEntries(this.commands
+      .map(c => c instanceof ZPLField ? c.templateFields : c.text.match(/\$\{(.+)\}/)?.[1])
+      .filter(a => a)
+      .flat()
+      .map(a => [a,undefined]))
   }
   addCommand(str,type){
     if(str instanceof ZPLCommand){
