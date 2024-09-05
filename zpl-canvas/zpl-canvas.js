@@ -89,8 +89,8 @@ export class ZPLCanvas extends HTMLElement{
       let formItems = Array.from(this.templateForm.children);
       for(let [key,val] of Object.entries(things)){
         let match = formItems.find(a => a.dataset.key === key);
-        if(match && match.firstChild.lastChild.value){
-          things[key] = match.firstChild.lastChild.value;
+        if(match && match.cells[1].firstChild.value){
+          things[key] = match.cells[1].firstChild.value;
         }
       }
       return things
@@ -136,7 +136,7 @@ export class ZPLCanvas extends HTMLElement{
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
     this.#label = zpl;
-    let templateParams = Object.assign(this.templateAttributes,template);
+    let templateParams = Object.assign(this.templateParams,template);
     let result = zpl.render(this.canvasContext,templateParams);
     
     return result
@@ -160,10 +160,10 @@ export class ZPLCanvas extends HTMLElement{
     for(let [key,val] of Object.entries(params)){
       let item = formItems.find(a => a.dataset.key === key);
       if(!item){
-        let it = ZPLCanvas.#ce("li",{class: "templatelist-item", "data-key": key});
-        let label = it.appendChild(ZPLCanvas.#ce("label",{class: "templatelist-label"}));
-        label.textContent = key;
-        let input = label.appendChild(ZPLCanvas.#ce("input",{type:"text",placeholder: "template value"}));
+        let it = ZPLCanvas.#ce("tr",{class: "templatelist-item", "data-key": key});
+        it.appendChild(ZPLCanvas.#ce("td",{class: "templatelist-label"})).textContent = key;
+        let cell = it.appendChild(ZPLCanvas.#ce("td",{class: "templatelist-value"}));
+        let input = cell.appendChild(ZPLCanvas.#ce("input",{type:"text",placeholder: "template value"}));
         input.zpl = this;
         input.addEventListener("input",ZPLCanvas.formFieldListener);
         form.appendChild(it);
@@ -185,12 +185,14 @@ export class ZPLCanvas extends HTMLElement{
     if(!zpl){
       return
     }
-    zpl.render(null,zpl.templateParams)
+    zpl.render()
   }
   static makeTemplateForm(zplcanvas){
     let box = zplcanvas.shadowRoot.appendChild(ZPLCanvas.#ce("div",{class:"form-container",part:"form-box"}));
-    zplcanvas.#templateForm = box.appendChild(ZPLCanvas.#ce("ul",{id:"template-form",part:"form"}))
-    return zplcanvas.#templateForm
+    let table = box.appendChild(ZPLCanvas.#ce("table",{id:"template-form",part:"form"}));
+    table.appendChild(document.createElement("tbody"));
+    zplcanvas.#templateForm = table;
+    return table
   }
   static #ce(tag,props){
     let node = document.createElement(tag);

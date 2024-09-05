@@ -393,7 +393,9 @@ export class ZPLLabel{
   }
   render(context,template = {}){
     for(let hmm of Object.entries(template)){
-      this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+      if(hmm[1] !== undefined){
+        this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+      }
     }
     let results = this.commands
     .map(command => {
