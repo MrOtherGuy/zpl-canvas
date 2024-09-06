@@ -3,7 +3,10 @@
   padding: 1em;
 }
 :host{
-  display: inline-block
+  display: inline-flex
+}
+.templatelist-label{
+  font-weight: bold;
 }
 canvas{
   background: white;

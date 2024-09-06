@@ -2,6 +2,7 @@ class ZPLCommand{
   constructor(str,type){
     this.text = str.slice(type.length);
     this.type = type;
+    this.hasTemplate = /\$\{.+\}/.test(this.text);
     if(!(type === "A" || type.length === 2)){
       throw new Error(`invalid command - must be either "A" or 2 characters - found "^${this.type}"`)
     }
@@ -17,8 +18,7 @@ class ZPLCommand{
     }
   }
   draw(){
-    console.log(this.type,this.text)
-    return this.toError("unknown command")
+    return this.toSuccess()
   }
   toError(msg){
     return { command: `^${this.type}${this.text}`, ok: false, reason: msg }
@@ -26,8 +26,10 @@ class ZPLCommand{
   toSuccess(){
     return { command: `^${this.type}${this.text}`, ok: true }
   }
-  stringify(){
-    return `^${this.type}${this.text}`
+  stringify(template){
+    return this.hasTemplate
+      ? `^${this.type}${template.get(this.text) || this.text}`
+      : `^${this.type}${this.text}`
   }
   static iterateOnce(cmd){
     let i = 0;
@@ -41,8 +43,18 @@ class ZPLCommand{
     }
   }
 }
+class ZPLUnknownCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str,type)
+  }
+  draw(){
+    console.log(this.type,this.text);
+    return this.toError("unknown command")
+  }
+}
 class ZPLField extends ZPLCommand{
   #commands;
+  #isClosed;
   constructor(str){
     super(str,"FO");
     let params = [...this.parameters()];
@@ -98,17 +110,27 @@ class ZPLField extends ZPLCommand{
     return this.#commands.every(a => !(a instanceof ZPLSymbolTypeCommand))
   }
   get templateFields(){
-    return this.#commands.filter(c => /\$\{.+\}/.test(c.text)).map(c => c.text.match(/\$\{(.+)\}/)?.[1])
+    return this.hasTemplate
+      ? this.#commands.filter(c => c.hasTemplate).map(c => c.text.match(/\$\{(.+)\}/)?.[1])
+      : []
   }
   addCommand(str,type){
     if(str instanceof ZPLCommand){
       this.#commands.push(str)
     }else if(str.trim().length){
-      this.#commands.push(new ZPLCommand(str,type));
+      this.#commands.push(new ZPLUnknownCommand(str,type));
     }
   }
   stringify(config){
     return `^FO${this.text}${this.#commands.map(c => c.stringify(config)).join("")}^FS`
+  }
+  static close(zplField){
+    if(zplField.#isClosed){
+      return
+    }
+    zplField.hasTemplate = !!zplField.#commands.find(c => c.hasTemplate);
+    zplField.#isClosed = true;
+    return zplField
   }
 }
 class ZPLFieldDataCommand extends ZPLCommand{
@@ -123,9 +145,6 @@ class ZPLFieldDataCommand extends ZPLCommand{
   }
   toSuccess(){
     return { command: `^${this.type}${[...this.parameters()].join(",")}`, ok: true }
-  }
-  stringify(template){
-    return `^FD${template.get(this.text) || this.text}`
   }
   draw(context,config,origin){
     let symbol = config.get("symbol_options");
@@ -359,11 +378,16 @@ class ZPLCommentCommand extends ZPLCommand{
   constructor(str,type){
     super(str.trimEnd(),type);
   }
-  draw(){
-    return this.toSuccess()
-  }
   parameters(){
     return ZPLCommand.iterateOnce(this)
+  }
+}
+class ZPLPrintQuantityCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str.trimEnd(),type);
+  }
+  stringify(template){
+    return `^PQ${template.get(this.text) || "1"}`
   }
 }
 export class ZPLLabel{
@@ -379,8 +403,8 @@ export class ZPLLabel{
   }
   get templateFields(){
     return Object.fromEntries(this.commands
+      .filter(c => c.hasTemplate)
       .map(c => c instanceof ZPLField ? c.templateFields : c.text.match(/\$\{(.+)\}/)?.[1])
-      .filter(a => a)
       .flat()
       .map(a => [a,undefined]))
   }
@@ -388,7 +412,7 @@ export class ZPLLabel{
     if(str instanceof ZPLCommand){
       this.commands.push(str)
     }else if(str.trim().length){
-      this.commands.push(new ZPLCommand(str,type));
+      this.commands.push(new ZPLUnknownCommand(str,type));
     }
   }
   render(context,template = {}){
@@ -414,7 +438,9 @@ export class ZPLLabel{
       throw new Error("Invalid label can't be stringified")
     }
     for(let hmm of Object.entries(template)){
-      this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+      if(hmm[1] != undefined){
+        this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+      }
     }
     const str =  `^XA
 ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
@@ -491,7 +517,7 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           if(!container){
             throw new Error("Stumbled upon ^FS but no container")
           }
-          label.addCommand(container,cmd);
+          label.addCommand(ZPLField.close(container));
           container = null
           break
         case "FR": // invert field color
@@ -513,6 +539,12 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           container
             ? container.addCommand(ZPLShapeCommand.create(command,cmd))
             : label.addCommand(ZPLShapeCommand.create(command,cmd));
+          break
+        case "PQ":
+          if(container){
+            throw new Error("Use ^FQ command only outside a field")
+          }
+          label.addCommand(new ZPLPrintQuantityCommand(command,cmd));
           break
         default:
           container
