@@ -1,6 +1,14 @@
 import { ZPLParser, ZPLStream, ZPLLabel } from "./zpl-parser.js";
 export { ZPLParser, ZPLStream, ZPLLabel }
 
+function createElement(tag,props){
+  let node = document.createElement(tag);
+  for(let [key,val] of Object.entries(props)){
+    node.setAttribute(key,val)
+  }
+  return node
+}
+
 export class ZPLCanvas extends HTMLElement{
   #canvas;
   #ctx;
@@ -18,11 +26,12 @@ export class ZPLCanvas extends HTMLElement{
     let width = this.getAttribute("data-width");
     let height = this.getAttribute("data-height");
     let scale = this.getAttribute("data-scale");
+    if(scale){
+      let f = Number.parseFloat(scale);
+      this.#scaleFactor = f;
+    }
     if(width && height){
       this.setSize(width,height)
-    }
-    if(scale){
-      this.setScale(Number.parseFloat(scale))
     }
     let childNodeText = Array.from(this.childNodes).filter(a => a.localName === "template").map(a => a.content.textContent).join("\n");
     if(childNodeText.length){
@@ -39,8 +48,13 @@ export class ZPLCanvas extends HTMLElement{
     }
   }
   setSize(width,height){
-    this.canvas.setAttribute("width",width);
-    this.canvas.setAttribute("height",height);
+    let scaledW = Math.floor(Math.max(0,Math.min(this.#scaleFactor * width,2048)));
+    let scaledH = Math.floor(Math.max(0,Math.min(this.#scaleFactor * height,2048)));
+    this.canvas.setAttribute("width",scaledW);
+    this.canvas.setAttribute("height",scaledH);
+    this.canvasContext.scale(this.#scaleFactor,this.#scaleFactor);
+    // you need to manually call .render() after this, if size changes then you likely
+    // don't want to render existing label anyway
   }
   stringify(template = {}){
     if(!(typeof template === "object") && !Array.isArray(template)){
@@ -63,9 +77,10 @@ export class ZPLCanvas extends HTMLElement{
     return this.#ctx
   }
   setScale(x){
-    this.setSize(this.canvas.width * (x / this.#scaleFactor),this.canvas.height * (x / this.#scaleFactor));
+    let oldScale = this.#scaleFactor;
     this.#scaleFactor = x;
-    this.canvasContext.scale(x,x);
+    
+    this.setSize(this.canvas.width / oldScale,this.canvas.height / oldScale); 
     this.#label && this.render()
   }
   get label(){
@@ -89,8 +104,8 @@ export class ZPLCanvas extends HTMLElement{
       let formItems = Array.from(this.templateForm.children);
       for(let [key,val] of Object.entries(things)){
         let match = formItems.find(a => a.dataset.key === key);
-        if(match && match.cells[1].firstChild.value){
-          things[key] = match.cells[1].firstChild.value;
+        if(match && match.value){
+          things[key] = match.value;
         }
       }
       return things
@@ -118,7 +133,6 @@ export class ZPLCanvas extends HTMLElement{
     }
   }
   get templateForm(){
-    
     return this.#templateForm
   }
   render(aZpl = null,template = {}){
@@ -157,55 +171,43 @@ export class ZPLCanvas extends HTMLElement{
     let form = this.templateForm || ZPLCanvas.makeTemplateForm(this);
     let formItems = Array.from(form.children);
     let toBePreserved = new Set();
+    let frag = new DocumentFragment();
     for(let [key,val] of Object.entries(params)){
       let item = formItems.find(a => a.dataset.key === key);
       if(!item){
-        let it = ZPLCanvas.#ce("tr",{class: "templatelist-item", "data-key": key});
-        it.appendChild(ZPLCanvas.#ce("td",{class: "templatelist-label"})).textContent = key;
-        let cell = it.appendChild(ZPLCanvas.#ce("td",{class: "templatelist-value"}));
-        let input = cell.appendChild(ZPLCanvas.#ce("input",{type:"text",placeholder: "template value"}));
-        input.zpl = this;
-        input.addEventListener("input",ZPLCanvas.formFieldListener);
-        form.appendChild(it);
-        toBePreserved.add(it);
+        let tr = ZPLCanvas.formRowFragment(this);
+        tr.key = key;
+        frag.appendChild(tr);
+        toBePreserved.add(tr);
       }else{
         toBePreserved.add(item)
       }
     }
     for(let child of formItems){
       if(!toBePreserved.has(child)){
-        child.removeEventListener("input",ZPLCanvas.formFieldListener);
+        child.input.removeEventListener("input",this);
         child.remove()
       }
     }
-    toBePreserved.clear()
+    toBePreserved.clear();
+    form.append(frag);
   }
-  static formFieldListener(ev){
-    let zpl = ev.target.zpl;
-    if(!zpl){
-      return
+  handleEvent(ev){
+    if(ev.type === "input" && ev.target.dataset.type === "form-input"){
+      this.render()
     }
-    zpl.render()
   }
   static makeTemplateForm(zplcanvas){
-    let box = zplcanvas.shadowRoot.appendChild(ZPLCanvas.#ce("div",{class:"form-container",part:"form-box"}));
-    let table = box.appendChild(ZPLCanvas.#ce("table",{id:"template-form",part:"form"}));
-    table.appendChild(document.createElement("tbody"));
-    zplcanvas.#templateForm = table;
-    return table
-  }
-  static #ce(tag,props){
-    let node = document.createElement(tag);
-    for(let [key,val] of Object.entries(props)){
-      node.setAttribute(key,val)
-    }
-    return node
+    let box = zplcanvas.shadowRoot.appendChild(createElement("div",{class:"form-container",part:"form-box"}));
+    let table = box.appendChild(createElement("table",{id:"template-form",part:"form"}));
+    zplcanvas.#templateForm = table.createTBody();
+    return zplcanvas.#templateForm 
   }
   static makeFragment(){
     let frag = document.createDocumentFragment();
-    frag.appendChild(ZPLCanvas.#ce("link",{as:"style",type:"text/css",rel:"preload prefetch stylesheet",href:"./zpl-canvas/zpl-canvas.css"}));
-    let div = frag.appendChild(ZPLCanvas.#ce("div",{class:"canvas-bg",part:"canvas-bg"}));
-    let canvas = div.appendChild(ZPLCanvas.#ce("canvas",{part:"canvas"}));
+    frag.appendChild(createElement("link",{as:"style",type:"text/css",rel:"preload prefetch stylesheet",href:"./zpl-canvas/zpl-canvas.css"}));
+    let div = frag.appendChild(createElement("div",{class:"canvas-bg",part:"canvas-bg"}));
+    let canvas = div.appendChild(createElement("canvas",{part:"canvas"}));
     return frag
   }
   static #Fragment;
@@ -215,5 +217,44 @@ export class ZPLCanvas extends HTMLElement{
     }
     return ZPLCanvas.#Fragment.cloneNode(true)
   }
+  static initFormRowItem(item,zpl){
+    Object.defineProperties(item,{
+      key: {
+        get(){
+          return this.dataset.key
+        },
+        set(k){
+          this.dataset.key = k;
+          this.cells[0].textContent = k;
+        }
+      },
+      input:{
+        get(){
+          return this.cells[1].firstChild
+        }
+      },
+      value:{
+        get(){
+          return this.input.value
+        }
+      }
+    });
+    item.input.addEventListener("input",zpl);
+    return item
+  }
+  static #formRowFragment;
+  static formRowFragment(zpl){
+    if(!this.#formRowFragment){
+      let frag = document.createDocumentFragment();
+      let tr = createElement("tr",{class: "templatelist-item"});
+      tr.appendChild(createElement("td",{class: "templatelist-label"}));
+      let cell = tr.appendChild(createElement("td",{class: "templatelist-value"}));
+      let input = cell.appendChild(createElement("input",{type:"text",placeholder: "template value","data-type": "form-input"}));
+      frag.appendChild(tr);
+      this.#formRowFragment = frag
+    }
+    return this.initFormRowItem(this.#formRowFragment.firstChild.cloneNode(true),zpl)
+  }
 }
+
 customElements.define("zpl-canvas",ZPLCanvas);
