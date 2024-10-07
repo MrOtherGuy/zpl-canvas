@@ -12,3 +12,9 @@ canvas{
   background: white;
   box-shadow: 0 0 2em black
 }
+input{
+  width: 100%;
+}
+input:invalid{
+  background-color: salmon;
+}
