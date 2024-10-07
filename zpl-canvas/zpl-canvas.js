@@ -60,7 +60,7 @@ export class ZPLCanvas extends HTMLElement{
     if(!(typeof template === "object") && !Array.isArray(template)){
       throw new Error("template descriptor is not an object")
     }
-    let templateParams = Object.assign(this.templateParams,template);
+    let templateParams = ZPLCanvas.#convertTemplateToInput(this.templateParams,template);
     return this.label.stringify(templateParams)
   }
   get canvas(){
@@ -96,7 +96,7 @@ export class ZPLCanvas extends HTMLElement{
   }
   get templateAttributes(){
     let ents = Object.entries(this.dataset).filter(a => a[0].startsWith("template_"));
-    return Object.fromEntries(ents.map(a => [a[0].slice(9),a[1]]));
+    return Object.fromEntries(ents.map(a => [a[0].slice(9),{id: a[0].slice(9), value: a[1],type:"text"}]));
   }
   get templateParams(){
     if(this.label?.isValid()){
@@ -105,7 +105,7 @@ export class ZPLCanvas extends HTMLElement{
       for(let [key,val] of Object.entries(things)){
         let match = formItems.find(a => a.dataset.key === key);
         if(match && match.value){
-          things[key] = match.value;
+          val.value = match.value;
         }
       }
       return things
@@ -150,10 +150,18 @@ export class ZPLCanvas extends HTMLElement{
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
     this.#label = zpl;
-    let templateParams = Object.assign(this.templateParams,template);
+
+    let templateParams = ZPLCanvas.#convertTemplateToInput(this.templateParams,template);
     let result = zpl.render(this.canvasContext,templateParams);
     
     return result
+  }
+  static #convertTemplateToInput(obj,input){
+    let out = {};
+    for(let val of Object.values(obj)){
+      out[val.id] = val.value
+    }
+    return Object.assign(out,input)
   }
   renderText(str,template = {}){
     let thing = ZPLParser.parse(str);
@@ -175,7 +183,7 @@ export class ZPLCanvas extends HTMLElement{
     for(let [key,val] of Object.entries(params)){
       let item = formItems.find(a => a.dataset.key === key);
       if(!item){
-        let tr = ZPLCanvas.formRowFragment(this);
+        let tr = ZPLCanvas.formRowFragment(this,val.type);
         tr.key = key;
         frag.appendChild(tr);
         toBePreserved.add(tr);
@@ -186,6 +194,8 @@ export class ZPLCanvas extends HTMLElement{
     for(let child of formItems){
       if(!toBePreserved.has(child)){
         child.input.removeEventListener("input",this);
+        child.input.removeEventListener("change",this);
+        delete child.input._file
         child.remove()
       }
     }
@@ -193,9 +203,94 @@ export class ZPLCanvas extends HTMLElement{
     form.append(frag);
   }
   handleEvent(ev){
-    if(ev.type === "input" && ev.target.dataset.type === "form-input"){
-      this.render()
+    if(ev.target.dataset.type !== "form-input"){
+      return
     }
+    if(ev.type === "input"){
+      this.render()
+    }else if(ev.type === "change" && ev.target.type === "file"){
+      let file = ev.target.files[0];
+      if(!file){
+        ev.target._file = null;
+        this.render();
+        return
+      }
+      let target = ev.target;
+      target.files[0].bytes()
+      .then(ZPLCanvas.bytesToImageData)
+      .then(imageData => {
+        let data = ZPLCanvas.serializeImage(imageData);
+        let len = (imageData.height * imageData.width) / 8;
+        target._file = `A,${len},${len},${imageData.width / 8},${data}`;
+        this.render()
+      })
+    }
+  }
+  static serializeImage(aImg){
+    const { data, height, width } = aImg;
+    let pix = new Array(height * width);
+    for(let i = 0; i < pix.length; i++){
+      let r = data[i * 4];
+      let g = data[i * 4 + 1];
+      let b = data[i * 4 + 2];
+      let a = data[i * 4 + 3] / 255;
+      let luma = ((Math.max(r,g,b) + Math.min(r,g,b)) / 2) * a;
+      pix[i] = luma < 70 ? 1 : 0; 
+    }
+    let fullBytes = width >> 3;
+    let padBits = width % 8;
+    let rowWidth = fullBytes + (padBits ? 1 : 0);
+    let out = new Array(rowWidth * height);
+    for(let i = 0; i < height; i++){
+      for(let j = 0; j < fullBytes; j++){
+        let offset = i * width + (j * 8);
+        out[i*rowWidth+j] = (pix[offset] << 7)
+                          | (pix[offset+1] << 6)
+                          | (pix[offset+2] << 5)
+                          | (pix[offset+3] << 4)
+                          | (pix[offset+4] << 3)
+                          | (pix[offset+5] << 2)
+                          | (pix[offset+6] << 1)
+                          | (pix[offset+7])
+      }
+      if(padBits){
+        let remainder = 0;
+        let offset = i * width + (fullBytes * 8);
+        for(let j = 0; j < padBits;i++){
+          remainder |= pix[offset+j] << (7 - j);
+        }
+        out[i*rowWidth+fullBytes] = remainder
+      }
+    }
+    let lines = new Array(height);
+    for(let i = 0; i < height; i++){
+      let j = rowWidth;
+      lines[i] = out.slice(i*rowWidth,(i+1)*rowWidth);
+      while(--j >= 0){
+        if(out[i*rowWidth+j] > 0){
+          break
+        }
+        lines[i].pop();
+      }
+      if(lines[i].length < rowWidth){
+        lines[i].push(-1)
+      }
+    }
+    return lines.map(o => o.map(b => b < 0 ? "," : (b >> 4).toString(16) + (b & 0xf).toString(16)).join(""))
+                .map((line,i,a) => a[i-1] === line ? ":" : line)
+                .join("")
+  }
+  static async bytesToImageData(aBytes){
+    let bytes = new Uint8ClampedArray(aBytes.buffer);
+    let base = btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join(''));
+    let img = new Image();
+    img.src = `data:image/png;base64,${base}`;
+    await new Promise(res => { img.addEventListener("load",res,{once:true}) });
+    let osc = new OffscreenCanvas(img.naturalWidth,img.naturalHeight);
+    let ctx = osc.getContext("2d");
+    ctx.drawImage(img,0,0);
+    let im = ctx.getImageData(0,0,img.naturalWidth,img.naturalHeight);
+    return im
   }
   static makeTemplateForm(zplcanvas){
     let box = zplcanvas.shadowRoot.appendChild(createElement("div",{class:"form-container",part:"form-box"}));
@@ -217,7 +312,7 @@ export class ZPLCanvas extends HTMLElement{
     }
     return ZPLCanvas.#Fragment.cloneNode(true)
   }
-  static initFormRowItem(item,zpl){
+  static initFormRowItem(item,zpl,inputType){
     Object.defineProperties(item,{
       key: {
         get(){
@@ -232,18 +327,39 @@ export class ZPLCanvas extends HTMLElement{
         get(){
           return this.cells[1].firstChild
         }
-      },
-      value:{
+      }
+    });
+    if(inputType === "image"){
+      let input = item.cells[1].firstChild;
+      Object.defineProperty(item,"value",{
+        get(){
+          return this.input._file
+        }
+      });
+      input.setAttribute("type","file");
+      input.setAttribute("accept","image/png");
+      input._file = null;
+      input.addEventListener("change",zpl);
+    }else{
+      Object.defineProperty(item,"value",{
         get(){
           return this.input.value
         }
+      })
+      if(inputType ==="number"){
+        let input = item.cells[1].firstChild;
+        input.setAttribute("type","number");
+        input.setAttribute("min","1");
+        input.setAttribute("max","500");
+        input.setAttribute("placeholder","1");
       }
-    });
-    item.input.addEventListener("input",zpl);
+      item.input.addEventListener("input",zpl);
+    }
+    
     return item
   }
   static #formRowFragment;
-  static formRowFragment(zpl){
+  static formRowFragment(zpl,inputType){
     if(!this.#formRowFragment){
       let frag = document.createDocumentFragment();
       let tr = createElement("tr",{class: "templatelist-item"});
@@ -253,7 +369,7 @@ export class ZPLCanvas extends HTMLElement{
       frag.appendChild(tr);
       this.#formRowFragment = frag
     }
-    return this.initFormRowItem(this.#formRowFragment.firstChild.cloneNode(true),zpl)
+    return this.initFormRowItem(this.#formRowFragment.firstChild.cloneNode(true),zpl,inputType)
   }
 }
 

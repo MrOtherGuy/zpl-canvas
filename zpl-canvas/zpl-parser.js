@@ -7,6 +7,9 @@ class ZPLCommand{
       throw new Error(`invalid command - must be either "A" or 2 characters - found "^${this.type}"`)
     }
   }
+  get templateContent(){
+    return this.hasTemplate ? { type: "text", id: this.text.match(/\$\{(.+)\}/)?.[1], value: undefined } : null
+  }
   parameters(){
     const arr = this.text.split(/\s*,\s*/).map(a => {let n = Number.parseInt(a); return Number.isNaN(n) ? a : n});
     return arr.values()
@@ -55,8 +58,8 @@ class ZPLUnknownCommand extends ZPLCommand{
 class ZPLField extends ZPLCommand{
   #commands;
   #isClosed;
-  constructor(str){
-    super(str,"FO");
+  constructor(str,type){
+    super(str,type);
     let params = [...this.parameters()];
     if(params.length < 2 || params.length > 3 || !params.every(a => (typeof a === "number"))){
       throw new Error(`invalid ^FO command: "${str}"`);
@@ -109,9 +112,12 @@ class ZPLField extends ZPLCommand{
   isTextField(){
     return this.#commands.every(a => !(a instanceof ZPLSymbolTypeCommand))
   }
+  get templateContent(){
+    return this.templateFields
+  }
   get templateFields(){
     return this.hasTemplate
-      ? this.#commands.filter(c => c.hasTemplate).map(c => c.text.match(/\$\{(.+)\}/)?.[1])
+      ? this.#commands.filter(c => c.hasTemplate).map(c => c.templateContent)
       : []
   }
   addCommand(str,type){
@@ -133,8 +139,59 @@ class ZPLField extends ZPLCommand{
     return zplField
   }
 }
+class ZPLGraphicsFieldCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str,type)
+  }
+  get templateContent(){
+    return this.hasTemplate ? { type: "image", id: this.text.match(/\$\{(.+)\}/)?.[1], value: undefined } : null
+  }
+  stringify(template){
+    return this.hasTemplate
+      ? `^${this.type}${template.get(this.text) || this.text}`
+      : `^${this.type}${this.text}`
+  }
+  draw(context,config,origin){
+    let data = config.get(this.text) || this.text;
+    if(data.startsWith("${")){
+      return this.toError("templated image is undefined")
+    }
+    let idx = 0;
+    {
+      let i = 0;
+      while(i < 4){
+        if(data[idx] === ","){
+          i++
+        }
+        if(idx >= data.length){
+          return this.toError("too few arguments")
+        }
+        idx++
+      }
+    }
+    let parts = data.slice(0,idx).split(",")
+    let mode = parts[0];
+    if(!/[Aa]/.test(mode)){
+      return this.toError(`unsupported graphics mode "${mode}"`)
+    }
+    if(!/[\d+]/.test(parts[1])){
+      return this.toError(`unsupported graphics databytes length "${parts[1]}"`)
+    }
+    let byteLength = Number.parseInt(parts[1]);
+    // parts[2] = totalBytes - which equals byteLength in mode A
+    let totalBytes = byteLength;
+    if(!/[\d+]/.test(parts[3])){
+      return this.toError(`unsupported graphics width "${parts[3]}"`)
+    }
+    let widthInBytes = parts[3];
+    let imageData = data.slice(idx);
+    console.log(imageData)
+    
+    return this.toSuccess()
+  }
+}
 class ZPLFieldDataCommand extends ZPLCommand{
-  constructor(str,type,propMap){
+  constructor(str,type){
     super(str,type);
   }
   parameters(){
@@ -173,6 +230,14 @@ class ZPLFieldDataCommand extends ZPLCommand{
     return this.toSuccess()
   }
 }
+class ZPLFieldSerialDataCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str,type)
+  }
+  draw(){
+    return this.toSuccess()
+  }
+}
 class ZPLFieldModifierCommand extends ZPLCommand{
   constructor(str,type){
     super(str,type);
@@ -186,19 +251,19 @@ class ZPLFieldModifierCommand extends ZPLCommand{
   }
 }
 class ZPLSymbolTypeCommand extends ZPLCommand{
-  constructor(str,type,propMap){
+  constructor(str,type){
     super(str.trimEnd(),type);
     this.requireParams(0,6);
   }
   static create(str,type){
     if(type === "BC"){
-      return new ZPLSymbolTypeBC(str)
+      return new ZPLSymbolTypeBC(str,type)
     }
     if(type === "BQ"){
-      return new ZPLSymbolTypeBQ(str)
+      return new ZPLSymbolTypeBQ(str,type)
     }
     if(type === "BX"){
-      return new ZPLSymbolTypeBX(str)
+      return new ZPLSymbolTypeBX(str,type)
     }
     return new ZPLSymbolTypeCommand(str,type)
   }
@@ -208,8 +273,8 @@ class ZPLSymbolTypeCommand extends ZPLCommand{
   }
 }
 class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
-  constructor(str){
-    super(str,"BC");
+  constructor(str,type,container){
+    super(str,type,container);
     this.requireParams(0,6);
   }
   draw(_,config){
@@ -237,8 +302,8 @@ class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
   }
 }
 class ZPLSymbolTypeBQ extends ZPLSymbolTypeCommand{
-  constructor(str){
-    super(str,"BQ");
+  constructor(str,type,container){
+    super(str,type,container);
     this.requireParams(0,5);
   }
   draw(_,config){
@@ -255,8 +320,8 @@ class ZPLSymbolTypeBQ extends ZPLSymbolTypeCommand{
   }
 }
 class ZPLSymbolTypeBX extends ZPLSymbolTypeCommand{
-  constructor(str){
-    super(str,"BX");
+  constructor(str,type,container){
+    super(str,type,container);
     this.requireParams(0,8);
   }
   draw(_,config){
@@ -386,9 +451,18 @@ class ZPLPrintQuantityCommand extends ZPLCommand{
   constructor(str,type){
     super(str.trimEnd(),type);
   }
+  get templateContent(){
+    return this.hasTemplate ? { type: "number", id: this.text.match(/\$\{(.+)\}/)?.[1], value: undefined } : null
+  }
   stringify(template){
     return `^PQ${template.get(this.text) || "1"}`
   }
+}
+function FieldRequiredError(type){
+  return new Error(`Command ^${type} is invalid outside of a ^FO field`)
+}
+function FieldInvalidError(type){
+  return new Error(`Command ^{type} cannot be used inside a ^FO field`)
 }
 export class ZPLLabel{
   #isValid;
@@ -402,11 +476,12 @@ export class ZPLLabel{
     return this.#isValid
   }
   get templateFields(){
-    return Object.fromEntries(this.commands
+    return Object.fromEntries(
+      this.commands
       .filter(c => c.hasTemplate)
-      .map(c => c instanceof ZPLField ? c.templateFields : c.text.match(/\$\{(.+)\}/)?.[1])
+      .map(c => c.templateContent)
       .flat()
-      .map(a => [a,undefined]))
+      .map(a => [a.id,a]))
   }
   addCommand(str,type){
     if(str instanceof ZPLCommand){
@@ -476,9 +551,9 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
     for(let command of commands){
       if(command[0] === "A"){
         if(!container){
-            throw new Error("Stumbled upon ^Ax but no container")
-          }
-          container.addCommand(new ZPLFontCommand(command,"A"));
+          throw FieldRequiredError("Ax")
+        }
+        container.addCommand(new ZPLFontCommand(command,"A"));
         continue
       }
       let cmd = command.slice(0,2);
@@ -493,7 +568,7 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
         case "BQ": // QR
         case "BX": // Datamatrix
           if(!container){
-            throw new Error(`Command ^${cmd} must be used inside a field (^FO)`)
+            throw FieldRequiredError(cmd)
           }
           container.addCommand(ZPLSymbolTypeCommand.create(command,cmd))
           break;
@@ -509,26 +584,26 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           break;
         case "FO":
           if(container){
-            throw new Error("Stumbled upon ^FO in already open container")
+            throw FieldInvalidError("FO")
           }
-          container = new ZPLField(command);
+          container = new ZPLField(command,"FO");
           break
         case "FS":
           if(!container){
-            throw new Error("Stumbled upon ^FS but no container")
+            throw FieldRequiredError("FS")
           }
           label.addCommand(ZPLField.close(container));
           container = null
           break
         case "FR": // invert field color
           if(!container){
-            throw new Error("Stumbled upon ^FR but no container")
+            throw FieldRequiredError("FR")
           }
           container.addCommand(new ZPLFieldModifierCommand(command,cmd));
           break
         case "FD": // Sets field data
           if(!container){
-            throw new Error("Stumbled upon ^FD but no container")
+            FieldRequiredError("FD")
           }
           container.addCommand(new ZPLFieldDataCommand(command,cmd));
           break
@@ -540,12 +615,21 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
             ? container.addCommand(ZPLShapeCommand.create(command,cmd))
             : label.addCommand(ZPLShapeCommand.create(command,cmd));
           break
+        case "GF":
+          container.addCommand(new ZPLGraphicsFieldCommand(command,cmd));
+          break
         case "PQ":
           if(container){
-            throw new Error("Use ^FQ command only outside a field")
+            throw FieldInvalidError("PQ")
           }
           label.addCommand(new ZPLPrintQuantityCommand(command,cmd));
           break
+        case "SN":
+          if(!container){
+            throw FieldRequiredError("SN")
+          }
+          container.addCommand(new ZPLFieldSerialDataCommand(command,cmd));
+          break;
         default:
           container
             ? container.addCommand(command,cmd)
