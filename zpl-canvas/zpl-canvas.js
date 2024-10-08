@@ -220,8 +220,8 @@ export class ZPLCanvas extends HTMLElement{
       .then(ZPLCanvas.bytesToImageData)
       .then(imageData => {
         let data = ZPLCanvas.serializeImage(imageData);
-        let len = (imageData.height * imageData.width) / 8;
-        target._file = `A,${len},${len},${imageData.width / 8},${data}`;
+        let len = (imageData.height * ((imageData.width >> 3) + (imageData.width % 8 > 0 ? 1 : 0)));
+        target._file = `A,${len},${len},${len / imageData.height},${data}`;
         this.render()
       })
     }
@@ -230,11 +230,15 @@ export class ZPLCanvas extends HTMLElement{
     const { data, height, width } = aImg;
     let pix = new Array(height * width);
     for(let i = 0; i < pix.length; i++){
+      if(data[i * 4 + 3] < 127){// 50% alpha
+        pix[i] = 0;
+        continue
+      }
       let r = data[i * 4];
       let g = data[i * 4 + 1];
       let b = data[i * 4 + 2];
-      let a = data[i * 4 + 3] / 255;
-      let luma = ((Math.max(r,g,b) + Math.min(r,g,b)) / 2) * a;
+      
+      let luma = (Math.max(r,g,b) + Math.min(r,g,b)) / 2;
       pix[i] = luma < 70 ? 1 : 0; 
     }
     let fullBytes = width >> 3;
@@ -256,10 +260,13 @@ export class ZPLCanvas extends HTMLElement{
       if(padBits){
         let remainder = 0;
         let offset = i * width + (fullBytes * 8);
-        for(let j = 0; j < padBits;i++){
+        for(let j = 0; j < padBits;j++){
           remainder |= pix[offset+j] << (7 - j);
         }
-        out[i*rowWidth+fullBytes] = remainder
+        out[i*rowWidth+fullBytes] = remainder;
+        if(padBits < 5){
+          out[i*rowWidth+fullBytes+1] = 0
+        }
       }
     }
     let lines = new Array(height);
