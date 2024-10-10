@@ -184,10 +184,55 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
       return this.toError(`unsupported graphics width "${parts[3]}"`)
     }
     let widthInBytes = parts[3];
-    let imageData = data.slice(idx);
-    console.log(imageData)
-    
+    let imageInput = data.slice(idx);
+    let imageData = ZPLGraphicsFieldCommand.stringToImageData(context,imageInput,widthInBytes,totalBytes / widthInBytes);
+    console.log(imageInput);
+    // createImageBitmap returns a promise so this will draw the image over everything else
+    let gco = context.globalCompositeOperation;
+    createImageBitmap(imageData)
+    .then(bitmap => {
+      let i = context.globalCompositeOperation;
+      context.globalCompositeOperation = gco;
+      context.drawImage(bitmap,origin[0],origin[1]);
+      context.globalCompositeOperation = i;
+    });
     return this.toSuccess()
+  }
+  static stringToImageData(context,str,sourceWidthInBytes,height){
+    let imageData = context.createImageData(sourceWidthInBytes * 8, height * 8);
+    const { data } = imageData;
+    let i = 0;
+    const byteWidth = sourceWidthInBytes * 8 * 4;
+    for(let y = 0; y < height; y++){
+      for(let x = 0; x < sourceWidthInBytes * 2; x++){
+        let char = str[i++];
+        if(i >= str.length){
+          return imageData
+        }
+        if(char === ":"){
+          if(y > 0 && x === 0){
+            data.copyWithin(y * byteWidth,(y-1) * byteWidth,y * byteWidth);
+            break
+          }else{
+            console.warn(`invalid ":" character @ ${i}`)
+            return imageData
+          }
+        }
+        if(char === ","){
+          break
+        }
+        let nibble = Number.parseInt(char,16);
+        if(Number.isNaN(nibble)){
+          console.warn(`invalid character "${char}" @ ${i}`);
+          return imageData
+        }
+        data[(byteWidth*y) + (x*16) + 3] = ((nibble & 0b1000) >> 3) * 255;
+        data[(byteWidth*y) + (x*16) + 7] = ((nibble & 0b0100) >> 2) * 255;
+        data[(byteWidth*y) + (x*16) + 11] = ((nibble & 0b0010) >> 1) * 255;
+        data[(byteWidth*y) + (x*16) + 15] = (nibble & 0b0001) * 255;
+      }
+    }
+    return imageData
   }
 }
 class ZPLFieldDataCommand extends ZPLCommand{
