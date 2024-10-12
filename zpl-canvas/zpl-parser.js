@@ -140,6 +140,7 @@ class ZPLField extends ZPLCommand{
   }
 }
 class ZPLGraphicsFieldCommand extends ZPLCommand{
+  #hash;
   constructor(str,type){
     super(str,type)
   }
@@ -148,47 +149,47 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
   }
   stringify(template){
     return this.hasTemplate
-      ? `^${this.type}${template.get(this.text) || this.text}`
-      : `^${this.type}${this.text}`
+      ? `^GF${template.get(this.text) || ""}`
+      : `^GF${this.text}`
+  }
+  get hash(){
+    if(this.hasTemplate){
+      return null
+    }
+    if(!this.#hash){
+      this.#hash = ZPLGraphicsFieldCommand.computeImageHash(this.text)
+    }
+    return this.#hash;
   }
   draw(context,config,origin){
-    let data = config.get(this.text) || this.text;
-    if(data.startsWith("${")){
-      return this.toError("templated image is undefined")
-    }
-    let idx = 0;
-    {
-      let i = 0;
-      while(i < 4){
-        if(data[idx] === ","){
-          i++
-        }
-        if(idx >= data.length){
-          return this.toError("too few arguments")
-        }
-        idx++
+    if(this.hasTemplate){
+      let input = config.get(this.text);
+      if(!input){
+        return this.toError("templated image is undefined")
+      }
+      let cachedBitmap = config.get(input);
+      if(cachedBitmap){
+        context.drawImage(cachedBitmap,origin[0],origin[1]);
+        return this.toSuccess()
+      }
+    }else{
+      let cachedBitmap = config.get(this.hash);
+      if(cachedBitmap){
+        context.drawImage(cachedBitmap,origin[0],origin[1]);
+        return this.toSuccess()
       }
     }
-    let parts = data.slice(0,idx).split(",")
-    let mode = parts[0];
-    if(!/[Aa]/.test(mode)){
-      return this.toError(`unsupported graphics mode "${mode}"`)
+    // This path isn't supposed to be taken unless something goes wrong
+    console.warn("Some caller has failed to create a bitmap for me");
+    let specs;
+    try{
+      specs = ZPLGraphicsFieldCommand.parseImageDefinition(this.hasTemplate ? context.get(this.text) : this.text);
+    }catch(ex){
+      return this.toError(ex.message)
     }
-    if(!/[\d+]/.test(parts[1])){
-      return this.toError(`unsupported graphics databytes length "${parts[1]}"`)
-    }
-    let byteLength = Number.parseInt(parts[1]);
-    // parts[2] = totalBytes - which equals byteLength in mode A
-    let totalBytes = byteLength;
-    if(!/[\d+]/.test(parts[3])){
-      return this.toError(`unsupported graphics width "${parts[3]}"`)
-    }
-    let widthInBytes = parts[3];
-    let imageInput = data.slice(idx);
-    let imageData = ZPLGraphicsFieldCommand.stringToImageData(context,imageInput,widthInBytes,totalBytes / widthInBytes);
-    console.log(imageInput);
-    // createImageBitmap returns a promise so this will draw the image over everything else
+    let imageData = ZPLGraphicsFieldCommand.stringToImageData(specs);
     let gco = context.globalCompositeOperation;
+    // If we end up here, then the preview will be slightly incorrect because the image will draw on top of everything else
     createImageBitmap(imageData)
     .then(bitmap => {
       let i = context.globalCompositeOperation;
@@ -198,15 +199,55 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
     });
     return this.toSuccess()
   }
-  static stringToImageData(context,str,sourceWidthInBytes,height){
-    let imageData = context.createImageData(sourceWidthInBytes * 8, height * 8);
+  static parseImageDefinition(data){
+    if(data.startsWith("${")){
+      throw new Error("templated image is undefined")
+    }
+    let idx = 0;
+    {
+      let i = 0;
+      while(i < 4){
+        if(data[idx] === ","){
+          i++
+        }
+        if(idx >= data.length){
+          throw new Error("too few arguments")
+        }
+        idx++
+      }
+    }
+    let parts = data.slice(0,idx).split(",")
+    let mode = parts[0];
+    if(!/[Aa]/.test(mode)){
+      throw new Error(`unsupported graphics mode "${mode}"`)
+    }
+    if(!/[\d+]/.test(parts[1])){
+      throw new Error(`unsupported graphics databytes length "${parts[1]}"`)
+    }
+    let byteLength = Number.parseInt(parts[1]);
+    // parts[2] = totalBytes - which equals byteLength in mode A
+
+    if(!/[\d+]/.test(parts[3])){
+      throw new Error(`unsupported graphics width "${parts[3]}"`)
+    }
+    return {
+      widthInBytes: parts[3],
+      text: data.slice(idx),
+      byteLength: byteLength,
+      totalBytes: byteLength
+    }
+  }
+  static stringToImageData(def){
+    const { widthInBytes, text, totalBytes } = def;
+    const height = totalBytes / widthInBytes;
+    let imageData = new ImageData(widthInBytes * 8, height * 8);
     const { data } = imageData;
     let i = 0;
-    const byteWidth = sourceWidthInBytes * 8 * 4;
+    const byteWidth = widthInBytes * 8 * 4;
     for(let y = 0; y < height; y++){
-      for(let x = 0; x < sourceWidthInBytes * 2; x++){
-        let char = str[i++];
-        if(i >= str.length){
+      for(let x = 0; x < widthInBytes * 2; x++){
+        let char = text[i++];
+        if(i >= text.length){
           return imageData
         }
         if(char === ":"){
@@ -233,6 +274,15 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
       }
     }
     return imageData
+  }
+  static computeImageHash(str){
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash *= 0x5bd1e995;
+      hash ^= hash >> 15
+    }
+    return hash; 
   }
 }
 class ZPLFieldDataCommand extends ZPLCommand{
@@ -512,6 +562,7 @@ function FieldInvalidError(type){
 export class ZPLLabel{
   #isValid;
   #configuration;
+  #bitmaps;
   constructor(){
     this.#isValid = false;
     this.commands = [];
@@ -528,6 +579,12 @@ export class ZPLLabel{
       .flat()
       .map(a => [a.id,a]))
   }
+  get bitmaps(){
+    if(!this.#bitmaps){
+      this.#bitmaps = new Map();
+    }
+    return this.#bitmaps
+  }
   addCommand(str,type){
     if(str instanceof ZPLCommand){
       this.commands.push(str)
@@ -538,7 +595,13 @@ export class ZPLLabel{
   render(context,template = {}){
     for(let hmm of Object.entries(template)){
       if(hmm[1] !== undefined){
-        this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+        if(hmm[1] instanceof ZPLImageBitmap){
+          let hash = hmm[1].hash;
+          this.#configuration.set(`\$\{${hmm[0]}\}`,hash);
+          this.#configuration.set(hash,this.bitmaps.get(hash))
+        }else{
+          this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+        }
       }
     }
     let results = this.commands
@@ -559,7 +622,7 @@ export class ZPLLabel{
     }
     for(let hmm of Object.entries(template)){
       if(hmm[1] != undefined){
-        this.#configuration.set(`\$\{${hmm[0]}\}`,String(hmm[1]))
+        this.#configuration.set(`\$\{${hmm[0]}\}`,hmm[1] instanceof ZPLImageBitmap ? hmm[1].string : String(hmm[1]))
       }
     }
     const str =  `^XA
@@ -568,7 +631,7 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
     this.#configuration.clear();
     return str
   }
-  static parse(str){
+  static async parse(str){
     let label = new ZPLLabel();
     if(str.length && str[0] != "^"){
       throw new Error(`Invalid data at [0]: ${str.slice(0,3)}`)
@@ -660,9 +723,17 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
             ? container.addCommand(ZPLShapeCommand.create(command,cmd))
             : label.addCommand(ZPLShapeCommand.create(command,cmd));
           break
-        case "GF":
-          container.addCommand(new ZPLGraphicsFieldCommand(command,cmd));
+        case "GF": {
+          let gfCommand = new ZPLGraphicsFieldCommand(command,cmd);
+          if(!gfCommand.hasTemplate){
+            let specs = ZPLGraphicsFieldCommand.parseImageDefinition(gfCommand.text);
+            let imageData = ZPLGraphicsFieldCommand.stringToImageData(specs);
+            let imageBitmap = await createImageBitmap(imageData);
+            label.bitmaps.set(gfCommand.hash,imageBitmap)
+          }
+          container.addCommand(gfCommand);
           break
+        }
         case "PQ":
           if(container){
             throw FieldInvalidError("PQ")
@@ -698,13 +769,127 @@ export class ZPLStream{
   }
 }
 
-export class ZPLParser{
-  static parse(str){
-    let stream = new ZPLStream();
-    let t = str.matchAll(/\^XA\s*(.*)\s*\^XZ/gs);
-    for(let label of t){
-      stream.labels.push(ZPLLabel.parse(label[1]))
+export class ZPLImageBitmap{
+  #hash;
+  #size;
+  #bitmap;
+  constructor(def = {}){
+    this.#bitmap = def.bitmap;
+    this.string = def.string;
+    return Object.freeze(this)
+  }
+  get size(){
+    if(!this.#size){
+      this.#size = ZPLGraphicsFieldCommand.parseImageDefinition(this.string);
     }
+    return this.#size
+  }
+  forget(){
+    this.#bitmap && this.#bitmap.close();
+    this.#bitmap = null
+  }
+  async getBitmap(){
+    if(!this.#bitmap){
+      let imageData = ZPLGraphicsFieldCommand.stringToImageData(this.size);
+      this.#bitmap = await createImageBitmap(imageData);
+    }
+    return this.#bitmap
+  }
+  get hash(){
+    if(!this.#hash){
+      this.#hash = ZPLGraphicsFieldCommand.computeImageHash(this.string)
+    }
+    return this.#hash
+  }
+}
+
+export class ZPLParser{
+  static async parse(str){
+    let stream = new ZPLStream();
+    let labels = str.matchAll(/\^XA\s*(.*)\s*\^XZ/gs);
+    let s = await Promise.all(labels.map(label => ZPLLabel.parse(label[1])));
+    s.forEach(p => stream.labels.push(p))
     return stream
+  }
+  static async bytesToImageData(aBytes){
+    let bytes = new Uint8ClampedArray(aBytes.buffer);
+    let base = btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join(''));
+    let img = new Image();
+    img.src = `data:image/png;base64,${base}`;
+    await new Promise(res => { img.addEventListener("load",res,{once:true}) });
+    let osc = new OffscreenCanvas(img.naturalWidth,img.naturalHeight);
+    let ctx = osc.getContext("2d");
+    ctx.drawImage(img,0,0);
+    let im = ctx.getImageData(0,0,img.naturalWidth,img.naturalHeight);
+    return im
+  }
+  static serializeImage(aImg){
+    const { data, height, width } = aImg;
+    let pix = new Array(height * width);
+    for(let i = 0; i < pix.length; i++){
+      if(data[i * 4 + 3] < 127){// 50% alpha
+        pix[i] = 0;
+        continue
+      }
+      let r = data[i * 4];
+      let g = data[i * 4 + 1];
+      let b = data[i * 4 + 2];
+      
+      let luma = (Math.max(r,g,b) + Math.min(r,g,b)) / 2;
+      pix[i] = luma < 70 ? 1 : 0; 
+    }
+    let fullBytes = width >> 3;
+    let padBits = width % 8;
+    let rowWidth = fullBytes + (padBits ? 1 : 0);
+    let out = new Array(rowWidth * height);
+    for(let i = 0; i < height; i++){
+      for(let j = 0; j < fullBytes; j++){
+        let offset = i * width + (j * 8);
+        out[i*rowWidth+j] = (pix[offset] << 7)
+                          | (pix[offset+1] << 6)
+                          | (pix[offset+2] << 5)
+                          | (pix[offset+3] << 4)
+                          | (pix[offset+4] << 3)
+                          | (pix[offset+5] << 2)
+                          | (pix[offset+6] << 1)
+                          | (pix[offset+7])
+      }
+      if(padBits){
+        let remainder = 0;
+        let offset = i * width + (fullBytes * 8);
+        for(let j = 0; j < padBits;j++){
+          remainder |= pix[offset+j] << (7 - j);
+        }
+        out[i*rowWidth+fullBytes] = remainder;
+        if(padBits < 5){
+          out[i*rowWidth+fullBytes+1] = 0
+        }
+      }
+    }
+    let lines = new Array(height);
+    for(let i = 0; i < height; i++){
+      let j = rowWidth;
+      lines[i] = out.slice(i*rowWidth,(i+1)*rowWidth);
+      while(--j >= 0){
+        if(out[i*rowWidth+j] > 0){
+          break
+        }
+        lines[i].pop();
+      }
+      if(lines[i].length < rowWidth){
+        lines[i].push(-1)
+      }
+    }
+    return lines.map(o => o.map(b => b < 0 ? "," : (b >> 4).toString(16) + (b & 0xf).toString(16)).join(""))
+                .map((line,i,a) => a[i-1] === line ? ":" : line)
+                .join("")
+  }
+  static async convertImage(aBytes){
+    let imageData = await ZPLParser.bytesToImageData(aBytes);
+    let len = (imageData.height * ((imageData.width >> 3) + (imageData.width % 8 > 0 ? 1 : 0)));
+    let data = ZPLParser.serializeImage(imageData);
+    return new ZPLImageBitmap({
+      string: `A,${len},${len},${len / imageData.height},${data}`
+    })
   }
 }

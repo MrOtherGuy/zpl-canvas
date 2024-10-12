@@ -163,19 +163,22 @@ export class ZPLCanvas extends HTMLElement{
     }
     return Object.assign(out,input)
   }
-  renderText(str,template = {}){
-    let thing = ZPLParser.parse(str);
+  async renderText(str,template = {}){
+    let thing = await ZPLParser.parse(str);
     if(!thing.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
     if(this.dataset.form === "true"){
-      let templateParams = Object.assign(thing.labels[0].templateFields,this.templateAttributes)
-      this.updateTemplateForm(templateParams);
+      await this.updateTemplateForm(thing.labels[0]);
+    }
+    if(this.label){
+      this.label.bitmaps.clear()
     }
     return this.render(thing.labels[0],template);
     // do things
   }
-  updateTemplateForm(params){
+  async updateTemplateForm(label){
+    let params = Object.assign(label.templateFields,this.templateAttributes);
     let form = this.templateForm || ZPLCanvas.makeTemplateForm(this);
     let formItems = Array.from(form.children);
     let toBePreserved = new Set();
@@ -194,13 +197,23 @@ export class ZPLCanvas extends HTMLElement{
     for(let child of formItems){
       if(!toBePreserved.has(child)){
         child.input.removeEventListener("input",this);
-        child.input.removeEventListener("change",this);
-        delete child.input._file
+        if(child.input.type === "file"){
+          child.input.removeEventListener("change",this);
+          child.input?._file?.forget();
+          delete child.input._file
+        }
         child.remove()
+      }
+    }
+    for(let child of toBePreserved){
+      if(child.input._file){
+        let bm = await child.input._file.getBitmap();
+        label.bitmaps.set(child.input._file.hash,bm);
       }
     }
     toBePreserved.clear();
     form.append(frag);
+    return
   }
   handleEvent(ev){
     if(ev.target.dataset.type !== "form-input"){
@@ -211,93 +224,24 @@ export class ZPLCanvas extends HTMLElement{
     }else if(ev.type === "change" && ev.target.type === "file"){
       let file = ev.target.files[0];
       if(!file){
+        ev.target?._file?.forget();
         ev.target._file = null;
         this.render();
         return
       }
       let target = ev.target;
+      target?._file?.forget();
+      if(!this.label){
+        return
+      }
       target.files[0].bytes()
-      .then(ZPLCanvas.bytesToImageData)
-      .then(imageData => {
-        let data = ZPLCanvas.serializeImage(imageData);
-        let len = (imageData.height * ((imageData.width >> 3) + (imageData.width % 8 > 0 ? 1 : 0)));
-        target._file = `A,${len},${len},${len / imageData.height},${data}`;
+      .then(ZPLParser.convertImage)
+      .then(async ZPLBitmap => {
+        target._file = ZPLBitmap;
+        this.label.bitmaps.set(ZPLBitmap.hash,await ZPLBitmap.getBitmap())
         this.render()
       })
     }
-  }
-  static serializeImage(aImg){
-    const { data, height, width } = aImg;
-    let pix = new Array(height * width);
-    for(let i = 0; i < pix.length; i++){
-      if(data[i * 4 + 3] < 127){// 50% alpha
-        pix[i] = 0;
-        continue
-      }
-      let r = data[i * 4];
-      let g = data[i * 4 + 1];
-      let b = data[i * 4 + 2];
-      
-      let luma = (Math.max(r,g,b) + Math.min(r,g,b)) / 2;
-      pix[i] = luma < 70 ? 1 : 0; 
-    }
-    let fullBytes = width >> 3;
-    let padBits = width % 8;
-    let rowWidth = fullBytes + (padBits ? 1 : 0);
-    let out = new Array(rowWidth * height);
-    for(let i = 0; i < height; i++){
-      for(let j = 0; j < fullBytes; j++){
-        let offset = i * width + (j * 8);
-        out[i*rowWidth+j] = (pix[offset] << 7)
-                          | (pix[offset+1] << 6)
-                          | (pix[offset+2] << 5)
-                          | (pix[offset+3] << 4)
-                          | (pix[offset+4] << 3)
-                          | (pix[offset+5] << 2)
-                          | (pix[offset+6] << 1)
-                          | (pix[offset+7])
-      }
-      if(padBits){
-        let remainder = 0;
-        let offset = i * width + (fullBytes * 8);
-        for(let j = 0; j < padBits;j++){
-          remainder |= pix[offset+j] << (7 - j);
-        }
-        out[i*rowWidth+fullBytes] = remainder;
-        if(padBits < 5){
-          out[i*rowWidth+fullBytes+1] = 0
-        }
-      }
-    }
-    let lines = new Array(height);
-    for(let i = 0; i < height; i++){
-      let j = rowWidth;
-      lines[i] = out.slice(i*rowWidth,(i+1)*rowWidth);
-      while(--j >= 0){
-        if(out[i*rowWidth+j] > 0){
-          break
-        }
-        lines[i].pop();
-      }
-      if(lines[i].length < rowWidth){
-        lines[i].push(-1)
-      }
-    }
-    return lines.map(o => o.map(b => b < 0 ? "," : (b >> 4).toString(16) + (b & 0xf).toString(16)).join(""))
-                .map((line,i,a) => a[i-1] === line ? ":" : line)
-                .join("")
-  }
-  static async bytesToImageData(aBytes){
-    let bytes = new Uint8ClampedArray(aBytes.buffer);
-    let base = btoa(Array.from(bytes).map(b => String.fromCharCode(b)).join(''));
-    let img = new Image();
-    img.src = `data:image/png;base64,${base}`;
-    await new Promise(res => { img.addEventListener("load",res,{once:true}) });
-    let osc = new OffscreenCanvas(img.naturalWidth,img.naturalHeight);
-    let ctx = osc.getContext("2d");
-    ctx.drawImage(img,0,0);
-    let im = ctx.getImageData(0,0,img.naturalWidth,img.naturalHeight);
-    return im
   }
   static makeTemplateForm(zplcanvas){
     let box = zplcanvas.shadowRoot.appendChild(createElement("div",{class:"form-container",part:"form-box"}));
@@ -340,7 +284,7 @@ export class ZPLCanvas extends HTMLElement{
       let input = item.cells[1].firstChild;
       Object.defineProperty(item,"value",{
         get(){
-          return this.input._file
+          return this.input._file // instance of ZPLImageBitmap
         }
       });
       input.setAttribute("type","file");

@@ -9,11 +9,11 @@ function lazyMakeSymbol(){
 	lazyTimeout = window.setTimeout(renderThing, 250);
 }
 
-function renderThing(){
+async function renderThing(){
   let textField = document.getElementById("textbox");
   let zplcanvas = document.getElementById("zpl-canvas");
   try{
-    let draws = zplcanvas.renderText(textField.value);
+    let draws = await zplcanvas.renderText(textField.value);
     textField.classList.remove("invalid");
     onRenderCallback({message: "Success!", calls : draws})
   }catch(ex){
