@@ -11,7 +11,7 @@ class ZPLCommand{
     return this.hasTemplate ? { type: "text", id: this.text.match(/\$\{(.+)\}/)?.[1], value: undefined } : null
   }
   parameters(){
-    const arr = this.text.split(/\s*,\s*/).map(a => {let n = Number.parseInt(a); return Number.isNaN(n) ? a : n});
+    const arr = this.text.split(/\s*,\s*/).map(a => /^\d+$/.test(a) ? Number.parseInt(a) : a);
     return arr.values()
   }
   requireParams(min,max = 10){
@@ -116,12 +116,19 @@ class ZPLField extends ZPLCommand{
       context.font = "normal 36px monospace";
     }
     if(fd){
-      results[fd.index] = fd.cmd.draw(context,config,params,this.writingMode === ZPLWritingMode.BLOCK ? config.get("block_size") : null);
+      results[fd.index] = fd.cmd.draw(
+        context,
+        config,
+        params,
+        this.writingMode === ZPLWritingMode.BLOCK ? config.get("block_size") : null,
+        isTextField ? TextTransforms.get(config.get("text_transform")) : TextTransformN
+      );
     }
     context.font = fontStyle;
     context.globalCompositeOperation = composite;
     config.delete("symbol_options");
     config.delete("block_size");
+    config.delete("text_transform");
     results.unshift(this.toSuccess());
     return results
   }
@@ -301,6 +308,57 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
     return hash; 
   }
 }
+class TextTransformN{
+  static apply(){
+    return
+  }
+  static reset(){
+    return
+  }
+}
+class TextTransformR{
+  static apply(ctx,x,y,w,h){
+    ctx.translate(x,y);
+    ctx.rotate(Math.PI/2);
+    ctx.translate(-x,-y-h);
+  }
+  static reset(ctx,x,y,w,h){
+    ctx.translate(x,y+h);
+    ctx.rotate(Math.PI/-2);
+    ctx.translate(-x,-y);
+  }
+}
+class TextTransformI{
+  static apply(ctx,x,y,w,h){
+    ctx.translate(x,y);
+    ctx.rotate(Math.PI);
+    ctx.translate(-x-w,-y-h);
+  }
+  static reset(ctx,x,y,w,h){
+    ctx.translate(x+w,y+h);
+    ctx.rotate(-Math.PI);
+    ctx.translate(-x,-y);
+  }
+}
+class TextTransformB{
+  static apply(ctx,x,y,w,h){
+    ctx.translate(x,y);
+    ctx.rotate(Math.PI * 1.5);
+    ctx.translate(-x-w,-y);
+  }
+  static reset(ctx,x,y,w,h){
+    ctx.translate(x+w,y);
+    ctx.rotate(Math.PI * -1.5);
+    ctx.translate(-x,-y);
+  }
+}
+const TextTransforms = new Map([
+["I",TextTransformI],
+["N",TextTransformN],
+["B",TextTransformB],
+["R",TextTransformR]
+]);
+
 class ZPLFieldDataCommand extends ZPLCommand{
   constructor(str,type){
     super(str,type);
@@ -314,11 +372,12 @@ class ZPLFieldDataCommand extends ZPLCommand{
   toSuccess(){
     return { command: `^${this.type}${[...this.parameters()].join(",")}`, ok: true }
   }
-  draw(context,config,origin,blockSize){
+  draw(context,config,origin,blockSize,transformation){
     let symbol = config.get("symbol_options");
     let y_origin = origin[1];
     let textOrigin = origin[0];
     const text = config.get(this.text) || this.text;
+    
     if(symbol?.type){
       let size = symbol.type.renderFake(context,origin,config,symbol,text);
       
@@ -330,18 +389,23 @@ class ZPLFieldDataCommand extends ZPLCommand{
       textOrigin += (size[0] >> 1);
       context.textAlign = "center";
     }
-    
     if(symbol?.line != "N"){
       // This branch will also draw the "normal" textfield text
       if(blockSize){
         // this is only ever true if on pure text fields
         let block = ZPLFieldDataCommand.measureTextBlock(context,blockSize,text);
+        const originalY = y_origin;
+        transformation?.apply(context,textOrigin,originalY,blockSize.w,block.lines.length * block.lineHeight);
         for(let line of block.lines){
           context.fillText(line,textOrigin,y_origin);
           y_origin += block.lineHeight;
         }
+        transformation?.reset(context,textOrigin,originalY,blockSize.w,block.lines.length * block.lineHeight);
       }else{
+        let measured = context.measureText(text);
+        transformation?.apply(context,textOrigin,y_origin,measured.width,measured.emHeightDescent);
         context.fillText(text,textOrigin,y_origin);
+        transformation?.reset(context,textOrigin,y_origin,measured.width,measured.emHeightDescent);
       }
     }
     if(symbol?.lineAbove === "Y"){
@@ -548,11 +612,17 @@ class ZPLFontCommand extends ZPLCommand{
   constructor(str,type){
     super(str.trimEnd(),type);
   }
-  draw(context){
+  draw(context,config){
     let [fontName,height,width] = [...this.parameters()];
+    let rotation = "N";
+    if(this.type === "A" && typeof fontName === "string"){
+      rotation = /[BINR]/.test(fontName[1]) ? fontName[1] : "N";
+      fontName = /\d/.test(fontName[0]) ? Number.parseInt(fontName[0]) : fontName[0];
+    }
     let fontEffects = ZPLFontCommand.getVariant(fontName);
     context.font = `normal ${height}px ${fontEffects[0]}`;
     context.fontStretch = fontEffects[1];
+    config.set("text_transform",rotation);
     return this.toSuccess()
   }
   static getVariant(param){
