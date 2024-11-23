@@ -101,6 +101,10 @@ export class ZPLCanvas extends HTMLElement{
   get templateParams(){
     if(this.label?.isValid()){
       let things = Object.assign(this.label.templateFields,this.templateAttributes);
+      let form = this.templateForm;
+      if(!form){
+        return things
+      }
       let formItems = Array.from(this.templateForm.children);
       for(let [key,val] of Object.entries(things)){
         let match = formItems.find(a => a.dataset.key === key);
