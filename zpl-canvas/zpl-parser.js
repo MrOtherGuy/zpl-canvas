@@ -55,6 +55,13 @@ class ZPLUnknownCommand extends ZPLCommand{
     return this.toError("unknown command")
   }
 }
+class ZPLWritingMode{
+  constructor(){
+    
+  }
+  static INLINE = 1;
+  static BLOCK = 2;
+}
 class ZPLField extends ZPLCommand{
   #commands;
   #isClosed;
@@ -65,6 +72,13 @@ class ZPLField extends ZPLCommand{
       throw new Error(`invalid ^FO command: "${str}"`);
     }
     this.#commands = [];
+  }
+  get writingMode(){
+    return this.isTextField()
+            ? this.#commands.every(a => a.type != "FB")
+              ? ZPLWritingMode.INLINE
+              : ZPLWritingMode.BLOCK
+            : null          
   }
   draw(context,config){
     context.textBaseline = "top";
@@ -78,6 +92,7 @@ class ZPLField extends ZPLCommand{
     let results = this.#commands
     .map((command,idx) => {
       if(command instanceof ZPLFieldDataCommand){
+        // This is kinda weird, but we store the ^FD command to be drawn only after all other commands inside the field are executed
         fd = {index: idx, cmd:command}
         return {dummy:true}
       }else if(command.type === "CF"){
@@ -101,11 +116,12 @@ class ZPLField extends ZPLCommand{
       context.font = "normal 36px monospace";
     }
     if(fd){
-      results[fd.index] = fd.cmd.draw(context,config,params);
+      results[fd.index] = fd.cmd.draw(context,config,params,this.writingMode === ZPLWritingMode.BLOCK ? config.get("block_size") : null);
     }
     context.font = fontStyle;
     context.globalCompositeOperation = composite;
     config.delete("symbol_options");
+    config.delete("block_size");
     results.unshift(this.toSuccess());
     return results
   }
@@ -298,7 +314,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
   toSuccess(){
     return { command: `^${this.type}${[...this.parameters()].join(",")}`, ok: true }
   }
-  draw(context,config,origin){
+  draw(context,config,origin,blockSize){
     let symbol = config.get("symbol_options");
     let y_origin = origin[1];
     let textOrigin = origin[0];
@@ -316,13 +332,80 @@ class ZPLFieldDataCommand extends ZPLCommand{
     }
     
     if(symbol?.line != "N"){
-      context.fillText(text,textOrigin,y_origin);
+      // This branch will also draw the "normal" textfield text
+      if(blockSize){
+        // this is only ever true if on pure text fields
+        let block = ZPLFieldDataCommand.measureTextBlock(context,blockSize,text);
+        for(let line of block.lines){
+          context.fillText(line,textOrigin,y_origin);
+          y_origin += block.lineHeight;
+        }
+      }else{
+        context.fillText(text,textOrigin,y_origin);
+      }
     }
     if(symbol?.lineAbove === "Y"){
       context.fillText(text,textOrigin,origin[1] - this.textSize(context));
     }
     context.textAlign = "left";
     return this.toSuccess()
+  }
+  static measureTextBlock(ctx,blockSize,text){
+    if(blockSize.h < 1){
+      return {lineHeight: 0, lines:[]}
+    }
+    let textSize = ctx.measureText(text);
+    const lineHeight = Math.ceil(textSize.emHeightDescent);
+    if(textSize.width <= blockSize.w){
+      return {lineHeight: lineHeight,lines: [text]}
+    }
+    
+    let simpleParts = text.split("\\&").slice(0,blockSize.h);
+    if(simpleParts.every(s => ctx.measureText(s).width <= blockSize.w)){
+      return {lineHeight: lineHeight,lines: simpleParts}
+    }
+    let linesToDraw = [];
+    
+    let slice = simpleParts.shift();
+    let parts = slice.split(/\s/);
+    let constructed = [parts[0]];
+    let previousWidth = ctx.measureText(constructed[0]).width;
+    if(previousWidth > blockSize.w){
+      console.log("first line is too long to fit");
+      return {lineHeight: lineHeight, lines:[]}
+    }
+    const wsw = ctx.measureText(" ").width;
+    let i = 0;
+    let idx = 0;
+    const AVAIL_WIDTH = blockSize.w;
+    const AVAIL_LINES = blockSize.h;
+    while(i < AVAIL_LINES){
+      if(idx >= parts.length){
+        i++;
+        if(i >= AVAIL_LINES){
+          break
+        }
+        idx=0;
+        linesToDraw.push(constructed.join(" "));
+        constructed = [];
+        slice = simpleParts.shift();
+        if(!slice){
+          break
+        }
+        parts = slice.split(/\s/);
+        continue
+      }
+      let newPart = wsw + ctx.measureText(parts[++idx]).width;
+      if((previousWidth + newPart) <= AVAIL_WIDTH){
+        previousWidth += newPart;
+        constructed.push(parts[idx]);
+      }else{
+        linesToDraw.push(constructed.join(" "));
+        constructed = [parts[idx]];
+        i++
+      }
+    }
+    return {lineHeight: lineHeight, lines:linesToDraw}
   }
 }
 class ZPLFieldSerialDataCommand extends ZPLCommand{
@@ -340,6 +423,12 @@ class ZPLFieldModifierCommand extends ZPLCommand{
   draw(context,config){
     if(this.type === "FR"){
       context.globalCompositeOperation = "xor";
+      return this.toSuccess()
+    }
+    if(this.type === "FB"){
+      // TODO ^FB has three other params as well
+      let params = [...this.parameters()]
+      config.set("block_size",{w: Number.parseInt(params[0]) || 0,h: Number.parseInt(params[1]) || 1});
       return this.toSuccess()
     }
     return this.toSuccess()
@@ -704,6 +793,7 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           container = null
           break
         case "FR": // invert field color
+        case "FB": // set field writing mode to block instead of inline
           if(!container){
             throw FieldRequiredError("FR")
           }
