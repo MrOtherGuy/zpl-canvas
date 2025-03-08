@@ -1,3 +1,4 @@
+import { createBarcodePattern } from "./barcodePatternGenerator.js";
 class ZPLCommand{
   constructor(str,type){
     this.text = str.slice(type.length);
@@ -377,17 +378,23 @@ class ZPLFieldDataCommand extends ZPLCommand{
     let y_origin = origin[1];
     let textOrigin = origin[0];
     const text = config.get(this.text) || this.text;
+    const skipDraw = /^\$\{/.test(text);
     
-    if(symbol?.type){
-      let size = symbol.type.renderFake(context,origin,config,symbol,text);
-      
-      if(symbol.type != ZPLSymbolTypeBC){
-        // we can return since symbol types other than code128 don't print text
-        return this.toSuccess()
+    if(skipDraw){
+      y_origin += symbol?.height || config.get("height") || 10;
+      textOrigin += (config.get("module_width") || 2) >> 1;
+    }else{
+      if(!skipDraw && symbol?.type){
+        let size = symbol.type.renderFake(context,origin,config,symbol,text);
+        
+        if(![ZPLSymbolTypeBC,ZPLSymbolTypeBEBU].includes(symbol.type)){
+          // we can return since symbol types other than code128 don't print text
+          return this.toSuccess()
+        }
+        y_origin += size[1] + 10;
+        textOrigin += (size[0] >> 1);
+        context.textAlign = "center";
       }
-      y_origin += size[1] + 10;
-      textOrigin += (size[0] >> 1);
-      context.textAlign = "center";
     }
     if(symbol?.line != "N"){
       // This branch will also draw the "normal" textfield text
@@ -466,6 +473,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
       }else{
         linesToDraw.push(constructed.join(" "));
         constructed = [parts[idx]];
+        previousWidth = newPart;
         i++
       }
     }
@@ -507,6 +515,9 @@ class ZPLSymbolTypeCommand extends ZPLCommand{
     if(type === "BC"){
       return new ZPLSymbolTypeBC(str,type)
     }
+    if(type === "BE" || type === "BU"){
+      return new ZPLSymbolTypeBEBU(str,type)
+    }
     if(type === "BQ"){
       return new ZPLSymbolTypeBQ(str,type)
     }
@@ -518,6 +529,32 @@ class ZPLSymbolTypeCommand extends ZPLCommand{
   static renderFake(){
     console.log("unimplemented fake render");
     return [0,0]
+  }
+}
+class ZPLSymbolTypeBEBU extends ZPLSymbolTypeCommand{
+  constructor(str,type,container){
+    super(str,type,container);
+    this.requireParams(0,6);
+  }
+  draw(_,config){
+    let [orientation,height,line,lineAbove,checkDigit,mode] = [...this.parameters()];
+    let type = ZPLSymbolTypeBEBU;
+    let opt = {...{type,orientation,height,line,lineAbove,checkDigit,mode}};
+    config.set("symbol_options",opt);
+    return this.toSuccess()
+  }
+  static renderFake(context,origin,map,symbolOptions,text){
+    let mod_width = map.get("module_width") || 2;
+    let height = symbolOptions.height || map.get("height") || 10;
+    let x = origin[0];
+    const y = origin[1];
+    let RLE = createBarcodePattern({text: text, type: "EAN"});
+    for(let i = 0; i < RLE.length; i += 2){
+      context.fillRect(x,y,mod_width * RLE[i],height);
+      x += (mod_width * RLE[i] + mod_width * RLE[i+1]);
+    }
+    // absolute width is always 95 * mod_width
+    return [95 * mod_width, height]
   }
 }
 class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
@@ -532,19 +569,26 @@ class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
     config.set("symbol_options",opt);
     return this.toSuccess()
   }
-  static renderFake(context,origin,map,symbolOptions){
+  static renderFake(context,origin,map,symbolOptions,text){
     let mod_width = map.get("module_width") || 2;
     let mod_ratio = map.get("module_ratio") || 3;
     let height = symbolOptions.height || map.get("height") || 10;
     let x = origin[0];
     const y = origin[1];
-    for(let i = 0; i < 10; i++){
-      context.fillRect(x,y,mod_width,height);
-      x += mod_width+(mod_ratio * mod_width);
-      context.fillRect(x,y,mod_width * mod_ratio,height);
-      x += mod_width+(mod_ratio * mod_width);
-      context.fillRect(x,y,mod_width * 2 * mod_ratio,height);
-      x += mod_width+(mod_ratio * 2 * mod_width);
+    let thing = createBarcodePattern({text:text, type: "Code128"});
+    for(let code of thing){
+      if(!code){
+        continue
+      }
+      for(let i = 0; i < code.length; i += 2){
+        context.fillRect(x,y,mod_width * code[i],height);
+        x += mod_width * code[i+1] + mod_width * code[i];
+        if(code.length > 6 && i === 4){
+          context.fillRect(x,y,mod_width * code[6],height);
+          x += mod_width * code[6];
+          break
+        }
+      }
     }
     return [x - origin[0],height];
   }
@@ -831,8 +875,10 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
             : label.addCommand(new ZPLCommentCommand(command,cmd));
           break;
         case "BC": // Code128
+        case "BE": // EAN
         case "BO": // Aztec
         case "BQ": // QR
+        case "BU": // UPC
         case "BX": // Datamatrix
           if(!container){
             throw FieldRequiredError(cmd)
