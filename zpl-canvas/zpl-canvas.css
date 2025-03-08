@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT */
+/* SPDX-FileCopyrightText: Copyright 2024-2025 MrOtherGuy */
+
 .canvas-bg{
   background: conic-gradient(#ddd 0.25turn, #aaa 0.25turn 0.5turn, #ddd 0.5turn 0.75turn, #aaa 0.75turn) top left / 14px 14px repeat;
   padding: 1em;

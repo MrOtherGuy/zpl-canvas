@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright 2025 MrOtherGuy
+
 function EAN13UPCWidths(def){
   if(!/^\d{12,13}$/.test(def.text)){
     throw new Error("input is not valid EAN-13 or UPC-A")

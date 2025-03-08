@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright 2024-2025 MrOtherGuy
+
 import { createBarcodePattern } from "./barcodePatternGenerator.js";
+
 class ZPLCommand{
   constructor(str,type){
     this.text = str.slice(type.length);

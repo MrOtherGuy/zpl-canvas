@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright 2024-2025 MrOtherGuy
+
 import { ZPLParser, ZPLStream, ZPLLabel } from "./zpl-parser.js";
 export { ZPLParser, ZPLStream, ZPLLabel }
 
