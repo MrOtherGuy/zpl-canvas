@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright 2024-2025 MrOtherGuy
 
-import { ZPLParser, ZPLStream, ZPLLabel } from "./zpl-parser.js";
+import { ZPLParser, ZPLStream, ZPLLabel, ZPLImageBitmap } from "./zpl-parser.js";
 export { ZPLParser, ZPLStream, ZPLLabel }
 
 function createElement(tag,props){
@@ -18,12 +18,16 @@ export class ZPLCanvas extends HTMLElement{
   #scaleFactor;
   #label;
   #templateForm;
+  #bitmaps;
+  #globalOffsets;
   constructor(){
     super();
     let template = document.getElementById("table-view-template");
     let fragment = template ? template.content.cloneNode(true) : ZPLCanvas.Fragment();
     let shadowRoot = this.attachShadow({mode: "open"}).appendChild(fragment);
     this.#scaleFactor = 1;
+    this.#bitmaps = null;
+    this.#globalOffsets = Int16Array.of(0,0,0);
   }
   #doConnectedCallback(){
     let width = this.getAttribute("data-width");
@@ -42,6 +46,18 @@ export class ZPLCanvas extends HTMLElement{
     }else{
       this.canvasContext;
     }
+  }
+  setGlobalOffset(x,y,z){
+    this.#globalOffsets[0] = x ?? this.#globalOffsets[0];
+    this.#globalOffsets[1] = y ?? this.#globalOffsets[1];
+    this.#globalOffsets[2] = z ?? this.#globalOffsets[2];
+    this.label?.setGlobalOffset(x,y,z)
+  }
+  get bitmaps(){
+    if(!this.#bitmaps){
+      this.#bitmaps = new Map();
+    }
+    return this.#bitmaps
   }
   connectedCallback(){
     if(document.readyState === "complete"){
@@ -104,6 +120,11 @@ export class ZPLCanvas extends HTMLElement{
   get templateParams(){
     if(this.label?.isValid()){
       let things = Object.assign(this.label.templateFields,this.templateAttributes);
+      for(let [key,val] of Object.entries(things)){
+        if(this.bitmaps.has(key)){
+          val.value = this.bitmaps.get(key)
+        }
+      }
       let form = this.templateForm;
       if(!form){
         return things
@@ -142,6 +163,9 @@ export class ZPLCanvas extends HTMLElement{
   get templateForm(){
     return this.#templateForm
   }
+  get hasTemplateForm(){
+    return this.dataset.form === "true"
+  }
   render(aZpl = null,template = {}){
     const zpl = aZpl === null ? this.label : aZpl; 
     if(!(zpl instanceof ZPLLabel)){
@@ -157,7 +181,7 @@ export class ZPLCanvas extends HTMLElement{
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
     this.#label = zpl;
-
+    zpl.setGlobalOffset(this.#globalOffsets[0],this.#globalOffsets[1],this.#globalOffsets[2]);
     let templateParams = ZPLCanvas.#convertTemplateToInput(this.templateParams,template);
     let result = zpl.render(this.canvasContext,templateParams);
     
@@ -170,16 +194,26 @@ export class ZPLCanvas extends HTMLElement{
     }
     return Object.assign(out,input)
   }
-  async renderText(str,template = {}){
+  async renderText(str,template = {},preserveBitmaps = false){
     let thing = await ZPLParser.parse(str);
     if(!thing.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
-    if(this.dataset.form === "true"){
+    if(this.hasTemplateForm){
       await this.updateTemplateForm(thing.labels[0]);
     }
-    if(this.label){
+    if(this.label && !preserveBitmaps){
+      for(let bm of this.bitmaps.values()){
+        bm.forget();
+      }
+      this.bitmaps.clear();
       this.label.bitmaps.clear()
+    }
+    for(let [key,val] of Object.entries(template)){
+      if(val instanceof ZPLImageBitmap){
+        this.bitmaps.set(key,val);
+        thing.labels[0].bitmaps.set(val.hash,await val.getBitmap());
+      }
     }
     return this.render(thing.labels[0],template);
     // do things
@@ -206,16 +240,16 @@ export class ZPLCanvas extends HTMLElement{
         child.input.removeEventListener("input",this);
         if(child.input.type === "file"){
           child.input.removeEventListener("change",this);
-          child.input?._file?.forget();
           delete child.input._file
         }
         child.remove()
       }
     }
     for(let child of toBePreserved){
-      if(child.input._file){
-        let bm = await child.input._file.getBitmap();
-        label.bitmaps.set(child.input._file.hash,bm);
+      let v = child.value;
+      if(v instanceof ZPLImageBitmap){
+        let bm = await v.getBitmap();
+        label.bitmaps.set(v.hash,bm);
       }
     }
     toBePreserved.clear();
@@ -230,21 +264,21 @@ export class ZPLCanvas extends HTMLElement{
       this.render()
     }else if(ev.type === "change" && ev.target.type === "file"){
       let file = ev.target.files[0];
+      const fieldId = ev.target.closest("tr").key;
+      let oldBitmap = this.bitmaps.get(fieldId);
+      oldBitmap?.forget();
+      this.bitmaps.remove(fieldId);
       if(!file){
-        ev.target?._file?.forget();
-        ev.target._file = null;
         this.render();
         return
       }
-      let target = ev.target;
-      target?._file?.forget();
       if(!this.label){
         return
       }
       target.files[0].bytes()
       .then(ZPLParser.convertImage)
       .then(async ZPLBitmap => {
-        target._file = ZPLBitmap;
+        this.bitmaps.set(fieldId,ZPLBitmap);
         this.label.bitmaps.set(ZPLBitmap.hash,await ZPLBitmap.getBitmap())
         this.render()
       })
@@ -291,12 +325,11 @@ export class ZPLCanvas extends HTMLElement{
       let input = item.cells[1].firstChild;
       Object.defineProperty(item,"value",{
         get(){
-          return this.input._file // instance of ZPLImageBitmap
+          return zpl.bitmaps.get(this.key)
         }
       });
       input.setAttribute("type","file");
       input.setAttribute("accept","image/png");
-      input._file = null;
       input.addEventListener("change",zpl);
     }else{
       Object.defineProperty(item,"value",{

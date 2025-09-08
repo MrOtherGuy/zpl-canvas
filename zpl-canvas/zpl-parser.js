@@ -26,17 +26,17 @@ class ZPLCommand{
     }
   }
   draw(){
-    return this.toSuccess()
+    return this.ok()
   }
   toError(msg){
     return { command: `^${this.type}${this.text}`, ok: false, reason: msg }
   }
-  toSuccess(){
+  ok(){
     return { command: `^${this.type}${this.text}`, ok: true }
   }
   stringify(template){
     return this.hasTemplate
-      ? `^${this.type}${template.get(this.text) || this.text}`
+      ? `^${this.type}${template.get(this.text) || ""}`
       : `^${this.type}${this.text}`
   }
   static iterateOnce(cmd){
@@ -67,6 +67,19 @@ class ZPLWritingMode{
   static INLINE = 1;
   static BLOCK = 2;
 }
+class FieldOrigin{
+  #coordinates;
+  constructor(x,y,z){
+    this.#coordinates = Uint16Array.of(x,y,z)
+  }
+  getAdjustedPosition(globalOffsets){
+    return Uint16Array.of(
+      this.#coordinates[0] + globalOffsets[0],
+      this.#coordinates[1] + globalOffsets[1],
+      this.#coordinates[2]
+    )
+  }
+}
 class ZPLField extends ZPLCommand{
   #commands;
   #isClosed;
@@ -76,6 +89,7 @@ class ZPLField extends ZPLCommand{
     if(params.length < 2 || params.length > 3 || !params.every(a => (typeof a === "number"))){
       throw new Error(`invalid ^FO command: "${str}"`);
     }
+    this.origin = new FieldOrigin(...params);
     this.#commands = [];
   }
   get writingMode(){
@@ -85,14 +99,14 @@ class ZPLField extends ZPLCommand{
               : ZPLWritingMode.BLOCK
             : null          
   }
-  draw(context,config){
+  draw(context,config,globalOffsets){
     context.textBaseline = "top";
     let composite = context.globalCompositeOperation;
     let fd = null;
     let fontStyle = context.font;
     let fieldSpecificFont = null;
     const isTextField = this.isTextField();
-    const params = [...this.parameters()];
+    const origin = this.origin.getAdjustedPosition(globalOffsets);
     
     let results = this.#commands
     .map((command,idx) => {
@@ -103,14 +117,14 @@ class ZPLField extends ZPLCommand{
       }else if(command.type === "CF"){
         // CF inside a field modifies the global font but does not affect text inside field that is configured as barcode - it does affect pure text fields though
         let font = context.font;
-        let result = command.draw(context,config,params);
+        let result = command.draw(context,config,origin);
         fontStyle = context.font;
         if(!isTextField){
           context.font = font
         }
         return result
       }
-      let result = command.draw(context,config,params);
+      let result = command.draw(context,config,origin);
       if(command.type === "A"){
         fieldSpecificFont = context.font
       }
@@ -124,9 +138,13 @@ class ZPLField extends ZPLCommand{
       results[fd.index] = fd.cmd.draw(
         context,
         config,
-        params,
-        this.writingMode === ZPLWritingMode.BLOCK ? config.get("block_size") : null,
-        isTextField ? TextTransforms.get(config.get("text_transform")) : TextTransformN
+        origin,
+        this.writingMode === ZPLWritingMode.BLOCK
+                            ? config.get("block_size")
+                            : null,
+        isTextField
+          ? TextTransforms.get(config.get("text_transform"))
+          : TextTransformN
       );
     }
     context.font = fontStyle;
@@ -134,7 +152,7 @@ class ZPLField extends ZPLCommand{
     config.delete("symbol_options");
     config.delete("block_size");
     config.delete("text_transform");
-    results.unshift(this.toSuccess());
+    results.unshift(this.ok());
     return results
   }
   isTextField(){
@@ -155,8 +173,9 @@ class ZPLField extends ZPLCommand{
       this.#commands.push(new ZPLUnknownCommand(str,type));
     }
   }
-  stringify(config){
-    return `^FO${this.text}${this.#commands.map(c => c.stringify(config)).join("")}^FS`
+  stringify(config,globalOffsets){
+    let o = this.origin.getAdjustedPosition(globalOffsets);
+    return `^FO${o[0]},${o[1]}${this.#commands.map(c => c.stringify(config)).join("")}^FS`
   }
   static close(zplField){
     if(zplField.#isClosed){
@@ -198,13 +217,13 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
       let cachedBitmap = config.get(input);
       if(cachedBitmap){
         context.drawImage(cachedBitmap,origin[0],origin[1]);
-        return this.toSuccess()
+        return this.ok()
       }
     }else{
       let cachedBitmap = config.get(this.hash);
       if(cachedBitmap){
         context.drawImage(cachedBitmap,origin[0],origin[1]);
-        return this.toSuccess()
+        return this.ok()
       }
     }
     // This path isn't supposed to be taken unless something goes wrong
@@ -225,7 +244,7 @@ class ZPLGraphicsFieldCommand extends ZPLCommand{
       context.drawImage(bitmap,origin[0],origin[1]);
       context.globalCompositeOperation = i;
     });
-    return this.toSuccess()
+    return this.ok()
   }
   static parseImageDefinition(data){
     if(data.startsWith("${")){
@@ -374,7 +393,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
   textSize(context){
     return Number.parseInt(context.font.match(/\d+/)) || 20
   }
-  toSuccess(){
+  ok(){
     return { command: `^${this.type}${[...this.parameters()].join(",")}`, ok: true }
   }
   draw(context,config,origin,blockSize,transformation){
@@ -385,15 +404,17 @@ class ZPLFieldDataCommand extends ZPLCommand{
     const skipDraw = /^\$\{/.test(text);
     
     if(skipDraw){
-      y_origin += symbol?.height || config.get("height") || 10;
-      textOrigin += (config.get("module_width") || 2) >> 1;
+      if(symbol){
+        y_origin += symbol?.height || config.get("height") || 10;
+        textOrigin += (config.get("module_width") || 2) >> 1;
+      }
     }else{
-      if(!skipDraw && symbol?.type){
+      if(symbol?.type){
         let size = symbol.type.renderFake(context,origin,config,symbol,text);
         
         if(![ZPLSymbolTypeBC,ZPLSymbolTypeBEBU].includes(symbol.type)){
           // we can return since symbol types other than code128 don't print text
-          return this.toSuccess()
+          return this.ok()
         }
         y_origin += size[1] + 10;
         textOrigin += (size[0] >> 1);
@@ -423,7 +444,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
       context.fillText(text,textOrigin,origin[1] - this.textSize(context));
     }
     context.textAlign = "left";
-    return this.toSuccess()
+    return this.ok()
   }
   static measureTextBlock(ctx,blockSize,text){
     if(blockSize.h < 1){
@@ -470,6 +491,21 @@ class ZPLFieldDataCommand extends ZPLCommand{
         parts = slice.split(/\s/);
         continue
       }
+      if(idx >= (parts.length - 1)){
+        if(i <= AVAIL_LINES){
+          linesToDraw.push(constructed.join(" "));
+          break;
+        }
+        constructed = [];
+        slice = simpleParts.shift();
+        if(!slice){
+          break
+        }
+        i++;
+        idx = 0;
+        parts = slice.split(/\s/);
+        continue;
+      }
       let newPart = wsw + ctx.measureText(parts[++idx]).width;
       if((previousWidth + newPart) <= AVAIL_WIDTH){
         previousWidth += newPart;
@@ -478,7 +514,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
         linesToDraw.push(constructed.join(" "));
         constructed = [parts[idx]];
         previousWidth = newPart;
-        i++
+        i++;
       }
     }
     return {lineHeight: lineHeight, lines:linesToDraw}
@@ -489,7 +525,7 @@ class ZPLFieldSerialDataCommand extends ZPLCommand{
     super(str,type)
   }
   draw(){
-    return this.toSuccess()
+    return this.ok()
   }
 }
 class ZPLFieldModifierCommand extends ZPLCommand{
@@ -499,15 +535,15 @@ class ZPLFieldModifierCommand extends ZPLCommand{
   draw(context,config){
     if(this.type === "FR"){
       context.globalCompositeOperation = "xor";
-      return this.toSuccess()
+      return this.ok()
     }
     if(this.type === "FB"){
       // TODO ^FB has three other params as well
       let params = [...this.parameters()]
       config.set("block_size",{w: Number.parseInt(params[0]) || 0,h: Number.parseInt(params[1]) || 1});
-      return this.toSuccess()
+      return this.ok()
     }
-    return this.toSuccess()
+    return this.ok()
   }
 }
 class ZPLSymbolTypeCommand extends ZPLCommand{
@@ -545,7 +581,7 @@ class ZPLSymbolTypeBEBU extends ZPLSymbolTypeCommand{
     let type = ZPLSymbolTypeBEBU;
     let opt = {...{type,orientation,height,line,lineAbove,checkDigit,mode}};
     config.set("symbol_options",opt);
-    return this.toSuccess()
+    return this.ok()
   }
   static renderFake(context,origin,map,symbolOptions,text){
     let mod_width = map.get("module_width") || 2;
@@ -571,7 +607,7 @@ class ZPLSymbolTypeBC extends ZPLSymbolTypeCommand{
     let type = ZPLSymbolTypeBC;
     let opt = {...{type,orientation,height,line,lineAbove,checkDigit,mode}};
     config.set("symbol_options",opt);
-    return this.toSuccess()
+    return this.ok()
   }
   static renderFake(context,origin,map,symbolOptions,text){
     let mod_width = map.get("module_width") || 2;
@@ -607,7 +643,7 @@ class ZPLSymbolTypeBQ extends ZPLSymbolTypeCommand{
     let type = ZPLSymbolTypeBQ;
     let opt = {...{type,orientation,model,magnification,ecc,mask}};
     config.set("symbol_options",opt);
-    return this.toSuccess()
+    return this.ok()
   }
   static renderFake(context,origin,map,symbolOptions,text){
     let height = symbolOptions.height || map.get("height") || 10;
@@ -625,7 +661,7 @@ class ZPLSymbolTypeBX extends ZPLSymbolTypeCommand{
     let type = ZPLSymbolTypeBX;
     let opt = {...{type,orientation,height,quality,columns,rows,format,escape,ratio}};
     config.set("symbol_options",opt);
-    return this.toSuccess()
+    return this.ok()
   }
   static computeSizeInModules(n){ // inaccurate, but good enough
     let tMaxData = [3,5,8,12,18,22,30,36,44];
@@ -671,7 +707,7 @@ class ZPLFontCommand extends ZPLCommand{
     context.font = `normal ${height}px ${fontEffects[0]}`;
     context.fontStretch = fontEffects[1];
     config.set("text_transform",rotation);
-    return this.toSuccess()
+    return this.ok()
   }
   static getVariant(param){
     switch(param){
@@ -699,7 +735,7 @@ class ZPLModuleSizeCommand extends ZPLCommand{
     if(height){
       config.set("height",height);
     }
-    return this.toSuccess()
+    return this.ok()
   }
 }
 // Shape commands
@@ -738,7 +774,7 @@ class ZPLShapeGB extends ZPLShapeCommand{
     }else{
       context.fillRect(origin[0],origin[1],width,height)
     }
-    return this.toSuccess()
+    return this.ok()
   }
 }
 class ZPLCommentCommand extends ZPLCommand{
@@ -760,20 +796,124 @@ class ZPLPrintQuantityCommand extends ZPLCommand{
     return `^PQ${template.get(this.text) || "1"}`
   }
 }
+class ZPLPrintOrientCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str.trimEnd(),type);
+    this.requireParams(1,1);
+    let param = str.trim().slice(2);
+    if(!(param === "N" || param === "I")){
+      throw new Error(`invalid parameter in "^PO" command - expected either "I" or "N - found: ${str}"`)
+    }
+  }
+}
+class ZPLPrintWidthCommand extends ZPLCommand{
+  constructor(str,type){
+    super(str.trimEnd(),type);
+    this.requireParams(1,1);
+    let param = str.trim().slice(2);
+    if(!/^\d+$/.test(param)){
+      throw new Error(`invalid parameter in "^PW" command - expected number - found ${param}`)
+    }
+  }
+  get templateContent(){
+    return this.hasTemplate ? { type: "number", id: this.text.match(/\$\{(.+)\}/)?.[1], value: undefined } : null
+  }
+}
 function FieldRequiredError(type){
   return new Error(`Command ^${type} is invalid outside of a ^FO field`)
 }
 function FieldInvalidError(type){
   return new Error(`Command ^{type} cannot be used inside a ^FO field`)
 }
+
+class Expression{
+  constructor(templateField,fun,comp){
+    this.target = templateField;
+    this.fun = fun;
+    this.comp = comp;
+  }
+  isMatch(obj){
+    return this.fun(obj,this.target,this.comp)
+  }
+  static fromSource(str){
+    let [lhs,rhs] = str.split("=").map(a => a.trim());
+    if(lhs === "true"){
+      return new Expression(null,Expression.always,null)
+    }
+    if(lhs === "false"){
+      return new Expression(null,Expression.never,null)
+    }
+    if(lhs.startsWith("@")){
+      if(rhs){
+        return new Expression(lhs.slice(1),Expression.equals,rhs)
+      }
+      return new Expression(lhs.slice(1),Expression.isAny,null)
+    }
+    if(lhs.startsWith("!")){
+      return new Expression(lhs.slice(1),Expression.isNone,null)
+    }
+    console.warn(`Expression ${str} couldn't be parsed`);
+    return new Expression(null,Expression.always,null)
+  }
+  static isAny(o,comp){
+    return o[comp] !== undefined
+  }
+  static isNone(o,comp){
+    return o[comp] === null || o[comp] === undefined
+  }
+  static equals(o,comp,test){
+    return o[comp] === test
+  }
+  static never(){
+    return false
+  }
+  static always(){
+    return true
+  }
+}
+
+class CommandRange{
+  constructor(start,end,command){
+    let s = Number.parseInt(start);
+    let e = Number.parseInt(end);
+    if(s > e){
+      throw new Error("Invalid range");
+    }
+    let [name,expression] = command.split(",");
+    this.start = s;
+    this.end =  e;
+    this.conditionalExpression = expression ? Expression.fromSource(expression) : null;
+    this.name = name;
+  }
+  testCondition(obj){
+    if(this.conditionalExpression){
+      return this.conditionalExpression.isMatch(obj)
+    }
+    return true
+  }
+}
+
 export class ZPLLabel{
   #isValid;
   #configuration;
   #bitmaps;
+  #autoranges;
+  #globalOffsets;
   constructor(){
     this.#isValid = false;
     this.commands = [];
     this.#configuration = new Map();
+    this.sections = new Map();
+    this.#autoranges = null;
+    this.#globalOffsets = Int16Array.of(0,0,0);
+  }
+  setGlobalOffset(x,y,z){
+    this.#globalOffsets[0] = x ?? this.#globalOffsets[0];
+    this.#globalOffsets[1] = y ?? this.#globalOffsets[1];
+    this.#globalOffsets[2] = z ?? this.#globalOffsets[2];
+  }
+  getGlobalOffset(){
+    return {x: this.#globalOffsets[0], y: this.#globalOffsets[1], z: this.#globalOffsets[2]}
   }
   isValid(){
     return this.#isValid
@@ -799,8 +939,8 @@ export class ZPLLabel{
       this.commands.push(new ZPLUnknownCommand(str,type));
     }
   }
-  render(context,template = {}){
-    for(let hmm of Object.entries(template)){
+  #setupRender(config){
+    for(let hmm of Object.entries(config)){
       if(hmm[1] !== undefined){
         if(hmm[1] instanceof ZPLImageBitmap){
           let hash = hmm[1].hash;
@@ -811,32 +951,98 @@ export class ZPLLabel{
         }
       }
     }
-    let results = this.commands
-    .map(command => {
+  }
+  #constructAutoRanges(){
+    // sections is iterated in insertion order so it's already sorted
+    let i = 0;
+    let arr = [];
+    for(let range of this.sections.values()){
+      if(i < range.start){
+        arr.push(new CommandRange(i,range.start,"<root>"))
+      }
+      arr.push(range);
+      i = range.end;
+    }
+    if(i < this.commands.length){
+      arr.push(new CommandRange(i,this.commands.length,"<root>"))
+    }
+    this.#autoranges = arr
+  }
+  get autoRanges(){
+    if(!this.#autoranges){
+      this.#constructAutoRanges();
+    }
+    return this.#autoranges
+  }
+  render(context,template = {}){
+    if(this.sections.size > 0){
+      let ranges = this.autoRanges.filter(r => r.testCondition(template));
+      return this.renderRanges(context,ranges,template)
+    }
+    this.#setupRender(template);
+    let results = ZPLLabel.#renderCommandSlice(context,this.commands,this.#configuration,this.#globalOffsets);
+    
+    this.#configuration.clear();
+    return results;
+  }
+  renderRanges(context,ranges,template = {}){
+    if(!ranges.every(r => r.start < r.end)){
+      throw new Error("Invlid ranges")
+    }
+    this.#setupRender(template);
+    let results = ranges.map(range => ZPLLabel.#renderCommandSlice(context,this.commands.slice(range.start,range.end),this.#configuration));
+    this.#configuration.clear();
+    return results.flat();
+  }
+  static #renderCommandSlice(context,slice,config){
+    let results = slice.map(command => {
       try{
-        return command.draw(context,this.#configuration)
+        if(command instanceof ZPLField){
+          return command.draw(context,config,globalOffsets)
+        }
+        return command.draw(context,config)
       }catch(ex){
         console.error(ex);
         return command.toError(ex.message)
       }
     });
-    this.#configuration.clear();
     return results.flat();
   }
-  stringify(template = {}){
+  #setupConfiguration(config){
     if(!this.#isValid){
       throw new Error("Invalid label can't be stringified")
     }
-    for(let hmm of Object.entries(template)){
+    for(let hmm of Object.entries(config)){
       if(hmm[1] != undefined){
         this.#configuration.set(`\$\{${hmm[0]}\}`,hmm[1] instanceof ZPLImageBitmap ? hmm[1].string : String(hmm[1]))
       }
     }
+  }
+  stringify(template = {}){
+    if(this.sections.size > 0){
+      let ranges = this.autoRanges.filter(r => r.testCondition(template));
+      return this.stringifyRanges(ranges,template)
+    }
+    this.#setupConfiguration(template);
     const str =  `^XA
-${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
+${this.commands.map(c => c.stringify(this.#configuration,this.#globalOffsets)).join("\n")}
 ^XZ`;
     this.#configuration.clear();
     return str
+  }
+  stringifyRanges(ranges,template = {}){
+    if(!ranges.every(r => r.start <= r.end)){
+      throw new Error("Invlid ranges")
+    }
+    this.#setupConfiguration(template);
+    let str = "^XA";
+    
+    let parts = ranges
+    .map(range => this.commands.slice(range.start,range.end)
+              .map(command => command.stringify(this.#configuration))
+              .join("\n"));
+    this.#configuration.clear();
+    return "^XA"+parts.join("\n")+"^XZ"
   }
   static async parse(str){
     let label = new ZPLLabel();
@@ -862,6 +1068,8 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
         throw new Error(`Leftover command start marker "^" at: ${s}`)
       }
     }
+    let rangeName = null;
+    let sectionStartAt = 0;
     let container = null;
     for(let command of commands){
       if(command[0] === "A"){
@@ -921,7 +1129,7 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           break
         case "FD": // Sets field data
           if(!container){
-            FieldRequiredError("FD")
+            throw FieldRequiredError("FD")
           }
           container.addCommand(new ZPLFieldDataCommand(command,cmd));
           break
@@ -929,11 +1137,15 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
         case "GC": // basic shape circle
         case "GD": // basic shape diagonal line
         case "GE": // basic shape ellipse
-          container
-            ? container.addCommand(ZPLShapeCommand.create(command,cmd))
-            : label.addCommand(ZPLShapeCommand.create(command,cmd));
+          if(!container){
+            throw FieldRequiredError(cmd)
+          }
+          container.addCommand(ZPLShapeCommand.create(command,cmd));
           break
         case "GF": {
+          if(!container){
+            throw FieldRequiredError("GF")
+          }
           let gfCommand = new ZPLGraphicsFieldCommand(command,cmd);
           if(!gfCommand.hasTemplate){
             let specs = ZPLGraphicsFieldCommand.parseImageDefinition(gfCommand.text);
@@ -944,17 +1156,42 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
           container.addCommand(gfCommand);
           break
         }
+        case "PO":
+          if(container){
+            throw FieldInvalidError("PO")
+          }
+          label.addCommand(new ZPLPrintOrientCommand(command,cmd));
+          break;
         case "PQ":
           if(container){
             throw FieldInvalidError("PQ")
           }
           label.addCommand(new ZPLPrintQuantityCommand(command,cmd));
-          break
+          break;
+        case "PW":
+          if(container){
+            throw FieldInvalidError("PO")
+          }
+          label.addCommand(new ZPLPrintWidthCommand(command,cmd));
+          break;
         case "SN":
           if(!container){
             throw FieldRequiredError("SN")
           }
           container.addCommand(new ZPLFieldSerialDataCommand(command,cmd));
+          break;
+        case "--": // This is a custom "command" that can be used to split command stream into sections
+          if(container){
+            throw new Error("Section separators are only supported at top level")
+          }
+          if(rangeName){
+            let range = new CommandRange(sectionStartAt,label.commands.length,rangeName);
+            label.sections.set(range.name,range);
+          }
+          rangeName = command.slice(2).trim() || null;
+          if(rangeName){
+            sectionStartAt = label.commands.length;
+          }
           break;
         default:
           container
@@ -962,8 +1199,12 @@ ${this.commands.map(c => c.stringify(this.#configuration)).join("\n")}
             : label.addCommand(command,cmd);
       }
     }
-    label.#isValid = true
-    
+    label.#isValid = true;
+    // auto-close range if one exists
+    if(rangeName){
+      let range = new CommandRange(sectionStartAt,label.commands.length,rangeName);
+      label.sections.set(range.name,range);
+    }
     return label
   }
 }
