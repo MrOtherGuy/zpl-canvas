@@ -990,11 +990,11 @@ export class ZPLLabel{
       throw new Error("Invlid ranges")
     }
     this.#setupRender(template);
-    let results = ranges.map(range => ZPLLabel.#renderCommandSlice(context,this.commands.slice(range.start,range.end),this.#configuration));
+    let results = ranges.map(range => ZPLLabel.#renderCommandSlice(context,this.commands.slice(range.start,range.end),this.#configuration,this.#globalOffsets));
     this.#configuration.clear();
     return results.flat();
   }
-  static #renderCommandSlice(context,slice,config){
+  static #renderCommandSlice(context,slice,config,globalOffsets){
     let results = slice.map(command => {
       try{
         if(command instanceof ZPLField){
@@ -1039,7 +1039,7 @@ ${this.commands.map(c => c.stringify(this.#configuration,this.#globalOffsets)).j
     
     let parts = ranges
     .map(range => this.commands.slice(range.start,range.end)
-              .map(command => command.stringify(this.#configuration))
+              .map(command => command.stringify(this.#configuration,this.#globalOffsets))
               .join("\n"));
     this.#configuration.clear();
     return "^XA"+parts.join("\n")+"^XZ"
