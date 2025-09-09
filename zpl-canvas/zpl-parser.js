@@ -435,9 +435,10 @@ class ZPLFieldDataCommand extends ZPLCommand{
         transformation?.reset(context,textOrigin,originalY,blockSize.w,block.lines.length * block.lineHeight);
       }else{
         let measured = context.measureText(text);
-        transformation?.apply(context,textOrigin,y_origin,measured.width,measured.emHeightDescent);
+        const descent = Math.ceil(Math.abs(measured.ideographicBaseline));
+        transformation?.apply(context,textOrigin,y_origin,measured.width,descent);
         context.fillText(text,textOrigin,y_origin);
-        transformation?.reset(context,textOrigin,y_origin,measured.width,measured.emHeightDescent);
+        transformation?.reset(context,textOrigin,y_origin,measured.width,descent);
       }
     }
     if(symbol?.lineAbove === "Y"){
@@ -451,7 +452,7 @@ class ZPLFieldDataCommand extends ZPLCommand{
       return {lineHeight: 0, lines:[]}
     }
     let textSize = ctx.measureText(text);
-    const lineHeight = Math.ceil(textSize.emHeightDescent);
+    const lineHeight = Math.ceil(Math.abs(textSize.ideographicBaseline));
     if(textSize.width <= blockSize.w){
       return {lineHeight: lineHeight,lines: [text]}
     }
