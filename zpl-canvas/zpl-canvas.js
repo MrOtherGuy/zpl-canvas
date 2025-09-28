@@ -16,7 +16,8 @@ export class ZPLCanvas extends HTMLElement{
   #canvas;
   #ctx;
   #scaleFactor;
-  #label;
+  #labelIdx;
+  #stream;
   #templateForm;
   #bitmaps;
   #globalOffsets;
@@ -100,18 +101,38 @@ export class ZPLCanvas extends HTMLElement{
     this.#scaleFactor = x;
     
     this.setSize(this.canvas.width / oldScale,this.canvas.height / oldScale); 
-    this.#label && this.render()
+    let label = this.label;
+    if(label){
+      this.render(label)
+    }
   }
   get label(){
-    return this.#label;
+    return this.#stream ? this.#stream.labels[this.#labelIdx] : undefined;
   }
   set label(zpl){
-    if(zpl instanceof ZPLLabel || zpl === null){
-      this.#label = zpl;
-      zpl && this.render();
-    }else{
-      throw new Error("label can only be set to ZPLLabel instance or null")
+    if(zpl instanceof ZPLStream){
+      this.#stream = zpl;
+      this.#labelIdx = 0;
+      this.render(zpl[0]);
+      return
     }
+    if(zpl instanceof ZPLLabel){
+      if(this.#stream){
+        let idx = this.#stream.labels.findIdx(a => (a === zpl));
+        if(idx > -1){
+          this.#labelIdx = idx;
+          this.render(zpl);
+          return
+        }
+      }
+      let stream = new ZPLStream("canvas-label");
+      stream.labels.push(zpl);
+      this.#stream = stream;
+      this.#labelIdx = 0;
+      this.render(zpl);
+      return
+    }
+    throw new Error("label can only be set to ZPLLabel or ZPLStream")
   }
   get templateAttributes(){
     let ents = Object.entries(this.dataset).filter(a => a[0].startsWith("template_"));
@@ -180,7 +201,6 @@ export class ZPLCanvas extends HTMLElement{
     if(!zpl.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
-    this.#label = zpl;
     zpl.setGlobalOffset(this.#globalOffsets[0],this.#globalOffsets[1],this.#globalOffsets[2]);
     let templateParams = ZPLCanvas.#convertTemplateToInput(this.templateParams,template);
     let result = zpl.render(this.canvasContext,templateParams);
@@ -194,13 +214,15 @@ export class ZPLCanvas extends HTMLElement{
     }
     return Object.assign(out,input)
   }
-  async renderText(str,template = {},preserveBitmaps = false){
+  async renderText(str,template = {},options = {}){
     let thing = await ZPLParser.parse(str);
     if(!thing.isValid()){
       throw new Error("ZPL stream doesn't contain any labels, maybe missing ^XA or ^XZ ?")
     }
+    const preserveBitmaps = !!options.preserveBitmaps;
+    const labelIdx = options.labelIdx || 0;
     if(this.hasTemplateForm){
-      await this.updateTemplateForm(thing.labels[0]);
+      await this.updateTemplateForm(thing.labels[labelIdx]);
     }
     if(this.label && !preserveBitmaps){
       for(let bm of this.bitmaps.values()){
@@ -209,13 +231,16 @@ export class ZPLCanvas extends HTMLElement{
       this.bitmaps.clear();
       this.label.bitmaps.clear()
     }
+    const label = thing.labels[labelIdx];
     for(let [key,val] of Object.entries(template)){
       if(val instanceof ZPLImageBitmap){
         this.bitmaps.set(key,val);
-        thing.labels[0].bitmaps.set(val.hash,await val.getBitmap());
+        label.bitmaps.set(val.hash,await val.getBitmap());
       }
     }
-    return this.render(thing.labels[0],template);
+    this.#stream = thing;
+    this.#labelIdx = labelIdx;
+    return this.render(label,template);
     // do things
   }
   async updateTemplateForm(label){

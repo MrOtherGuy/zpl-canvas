@@ -1258,7 +1258,7 @@ export class ZPLImageBitmap{
 export class ZPLParser{
   static async parse(str){
     let stream = new ZPLStream();
-    let labels = str.matchAll(/\^XA\s*(.*)\s*\^XZ/gs);
+    let labels = str.matchAll(/\^XA\s*(.*?)\s*\^XZ/gs);
     let s = await Promise.all(labels.map(label => ZPLLabel.parse(label[1])));
     s.forEach(p => stream.labels.push(p))
     return stream
